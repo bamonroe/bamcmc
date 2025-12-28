@@ -394,10 +394,9 @@ class TestMixtureProposal(unittest.TestCase):
         coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([0.0, 0.0]), 0.1)
         block_mask = jnp.array([1.0, 1.0])
 
-        proposal, log_ratio, new_key = mixture_proposal(
-            key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-            make_settings_array(alpha=0.5)
-        )
+        operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                   make_settings_array(alpha=0.5))
+        proposal, log_ratio, new_key = mixture_proposal(operand)
 
         self.assertEqual(proposal.shape, (2,))
         self.assertIsInstance(float(log_ratio), float)
@@ -416,10 +415,9 @@ class TestMixtureProposal(unittest.TestCase):
         proposals = []
         for i in range(100):
             key = jax.random.PRNGKey(i)
-            prop, _, _ = mixture_proposal(
-                key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                make_settings_array(alpha=0.0)
-            )
+            operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                       make_settings_array(alpha=0.0))
+            prop, _, _ = mixture_proposal(operand)
             proposals.append(prop)
 
         proposals = jnp.stack(proposals)
@@ -441,10 +439,9 @@ class TestMixtureProposal(unittest.TestCase):
         proposals = []
         for i in range(100):
             key = jax.random.PRNGKey(i)
-            prop, _, _ = mixture_proposal(
-                key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                make_settings_array(alpha=1.0)
-            )
+            operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                       make_settings_array(alpha=1.0))
+            prop, _, _ = mixture_proposal(operand)
             proposals.append(prop)
 
         proposals = jnp.stack(proposals)
@@ -462,10 +459,9 @@ class TestMixtureProposal(unittest.TestCase):
         coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([5.0, 5.0]), 0.1)
         block_mask = jnp.array([1.0, 1.0])
 
-        _, log_ratio, _ = mixture_proposal(
-            key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-            make_settings_array(alpha=0.5)
-        )
+        operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                   make_settings_array(alpha=0.5))
+        _, log_ratio, _ = mixture_proposal(operand)
 
         # Log ratio should be finite
         self.assertTrue(jnp.isfinite(log_ratio))
@@ -495,10 +491,9 @@ class TestMultinomialProposal(unittest.TestCase):
         block_mask = jnp.array([1.0, 1.0])
         step_mean, step_cov = self._make_dummy_stats(2)
 
-        proposal, log_ratio, new_key = multinomial_proposal(
-            key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-            make_settings_array(alpha=0.05, n_categories=10)
-        )
+        operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                   make_settings_array(alpha=0.05, n_categories=10))
+        proposal, log_ratio, new_key = multinomial_proposal(operand)
 
         self.assertEqual(proposal.shape, (2,))
         # Proposal should be on the grid [1, 10]
@@ -519,10 +514,9 @@ class TestMultinomialProposal(unittest.TestCase):
         proposals = []
         for i in range(200):
             key = jax.random.PRNGKey(i)
-            prop, _, _ = multinomial_proposal(
-                key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                make_settings_array(alpha=0.01, n_categories=10)  # Low alpha = track empirical closely
-            )
+            operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                       make_settings_array(alpha=0.01, n_categories=10))  # Low alpha = track empirical closely
+            prop, _, _ = multinomial_proposal(operand)
             proposals.append(float(prop[0]))
 
         # Value 2 should be most common
@@ -541,10 +535,9 @@ class TestMultinomialProposal(unittest.TestCase):
         block_mask = jnp.array([1.0])
         step_mean, step_cov = self._make_dummy_stats(1)
 
-        _, log_ratio, _ = multinomial_proposal(
-            key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-            make_settings_array(alpha=0.05, n_categories=5)
-        )
+        operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                   make_settings_array(alpha=0.05, n_categories=5))
+        _, log_ratio, _ = multinomial_proposal(operand)
 
         # For uniform distribution, ratio should be finite
         self.assertTrue(jnp.isfinite(log_ratio))

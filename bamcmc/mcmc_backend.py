@@ -38,6 +38,42 @@ from .checkpoint_helpers import (
 CHUNK_SIZE = 100
 NUGGET = 1e-5
 
+# --- COMPILED FUNCTION CACHE ---
+# Cache compiled MCMC kernels by configuration hash
+_COMPILED_KERNEL_CACHE = {}
+
+
+def _compute_cache_key(mcmc_config, data, block_arrays):
+    """
+    Compute a cache key for the compiled MCMC kernel.
+
+    The key captures everything that affects the compiled function:
+    - Posterior ID
+    - Data shapes (not values)
+    - Number of chains
+    - Number of parameters
+    - Block structure
+    - Dtype settings
+    """
+    # Extract shapes from data tuples
+    int_shapes = tuple(arr.shape for arr in data['int'])
+    float_shapes = tuple(arr.shape for arr in data['float'])
+    static_shape = tuple(data['static']) if 'static' in data else ()
+
+    key = (
+        mcmc_config['POSTERIOR_ID'],
+        mcmc_config['NUM_CHAINS'],
+        mcmc_config['USE_DOUBLE'],
+        mcmc_config.get('NUM_COLLECT', 0),
+        mcmc_config.get('SAVE_LIKELIHOODS', False),
+        block_arrays.num_blocks,
+        block_arrays.max_size,
+        int_shapes,
+        float_shapes,
+        static_shape,
+    )
+    return key
+
 
 # --- DATA STRUCTURES ---
 
@@ -886,25 +922,39 @@ def rmcmc(
     print(f"JAX backend: {jax.default_backend()}")
     print(f"Likelihood Saving: {'ENABLED' if mcmc_config['SAVE_LIKELIHOODS'] else 'DISABLED'}")
 
-    scan_body_configured = partial(
-        mcmc_scan_body_offload,
-        log_post_fn       = model_ctx['log_posterior_fn'],
-        direct_sampler_fn = model_ctx['direct_sampler_fn'],
-        gq_fn             = model_ctx['generated_quantities_fn'],
-        block_arrays      = block_arrays,
-        run_params        = run_params
-    )
+    # Check cache for compiled kernel
+    cache_key = _compute_cache_key(mcmc_config, data, block_arrays)
+    compiled_chunk = _COMPILED_KERNEL_CACHE.get(cache_key)
 
-    chunk_range = jnp.arange(CHUNK_SIZE)
-    def run_chunk(carry):
-        return jax.lax.scan(scan_body_configured, carry, chunk_range)
+    if compiled_chunk is not None:
+        print("Using cached kernel (skip compilation)", flush=True)
+        # No compilation needed - set time to 0
+        compile_start = time.perf_counter()
+        compile_end = compile_start  # Zero compile time
+    else:
+        scan_body_configured = partial(
+            mcmc_scan_body_offload,
+            log_post_fn       = model_ctx['log_posterior_fn'],
+            direct_sampler_fn = model_ctx['direct_sampler_fn'],
+            gq_fn             = model_ctx['generated_quantities_fn'],
+            block_arrays      = block_arrays,
+            run_params        = run_params
+        )
 
-    print("Compiling kernel... ", end="", flush=True)
-    compile_start = time.perf_counter()
-    compiled_chunk = jax.jit(run_chunk).lower(initial_carry).compile()
-    jax.block_until_ready(compiled_chunk(initial_carry))
-    compile_end = time.perf_counter()
-    print(f"Done ({compile_end - compile_start:.4f}s)")
+        chunk_range = jnp.arange(CHUNK_SIZE)
+        def run_chunk(carry):
+            return jax.lax.scan(scan_body_configured, carry, chunk_range)
+
+        print("Compiling kernel... ", end="", flush=True)
+        compile_start = time.perf_counter()
+        compiled_chunk = jax.jit(run_chunk).lower(initial_carry).compile()
+        jax.block_until_ready(compiled_chunk(initial_carry))
+        compile_end = time.perf_counter()
+        print(f"Done ({compile_end - compile_start:.4f}s)")
+
+        # Cache the compiled kernel
+        _COMPILED_KERNEL_CACHE[cache_key] = compiled_chunk
+        print(f"Kernel cached (key: {mcmc_config['POSTERIOR_ID']}, {mcmc_config['NUM_CHAINS']} chains)")
 
     benchmark_iters = mcmc_config.get('BENCHMARK', 0)
     avg_time = None
