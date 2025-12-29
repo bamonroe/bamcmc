@@ -12,19 +12,14 @@ import jax
 
 # Import functions to test
 from .mcmc_backend import (
-    parse_block_specs,
     compute_nested_rhat,           # Unified diagnostic
     initialize_mcmc_system,        # Initialization logic
-    extract_proposal_info_for_backend,
+    build_block_arrays,            # Block array builder
     gen_rng_keys,                  # For initializing RNG keys
 )
 from .batch_specs import BlockSpec, SamplerType, ProposalType
-from .settings import SettingSlot, MAX_SETTINGS, SETTING_DEFAULTS
-from .error_handling import (
-    check_covariance_matrix,
-    validate_mcmc_config,
-    validate_batch_specs,
-)
+from .settings import SettingSlot, MAX_SETTINGS, SETTING_DEFAULTS, build_settings_matrix
+from .error_handling import validate_mcmc_config
 
 
 def make_settings_array(alpha=None, n_categories=None):
@@ -284,8 +279,8 @@ class TestInitializationLogic(unittest.TestCase):
         self.assertEqual(states_B[0,0], 20.0)
         self.assertEqual(states_B[1,0], 20.0)
 
-class TestParseBlockSpecs(unittest.TestCase):
-    """Test the parse_block_specs function."""
+class TestBuildBlockArrays(unittest.TestCase):
+    """Test the build_block_arrays function."""
 
     def test_single_block(self):
         """Test with a single parameter block."""
@@ -297,11 +292,11 @@ class TestParseBlockSpecs(unittest.TestCase):
                 label='block0'
             )
         ]
-        result = parse_block_specs(batch_specs, start_idx=0)
+        result = build_block_arrays(batch_specs, start_idx=0)
 
-        self.assertEqual(result['num_blocks'], 1)
-        self.assertEqual(result['max_size'], 3)
-        self.assertEqual(result['total_params'], 3)
+        self.assertEqual(result.num_blocks, 1)
+        self.assertEqual(result.max_size, 3)
+        self.assertEqual(result.total_params, 3)
 
     def test_multiple_blocks(self):
         """Test with multiple blocks of different types."""
@@ -309,11 +304,11 @@ class TestParseBlockSpecs(unittest.TestCase):
             BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.SELF_MEAN),
             BlockSpec(1, SamplerType.DIRECT_CONJUGATE, direct_sampler_fn=lambda x: x)
         ]
-        result = parse_block_specs(batch_specs, start_idx=0)
+        result = build_block_arrays(batch_specs, start_idx=0)
 
-        self.assertEqual(result['num_blocks'], 2)
-        self.assertEqual(result['total_params'], 3)
-        self.assertTrue(jnp.array_equal(result['types'], jnp.array([0, 1])))
+        self.assertEqual(result.num_blocks, 2)
+        self.assertEqual(result.total_params, 3)
+        self.assertTrue(jnp.array_equal(result.types, jnp.array([0, 1])))
 
 
 class TestProposalSettings(unittest.TestCase):
@@ -322,22 +317,21 @@ class TestProposalSettings(unittest.TestCase):
     # Expected default alpha (must match SETTING_DEFAULTS in settings.py)
     DEFAULT_ALPHA = 0.5
 
-    def test_extract_proposal_info_default_settings(self):
+    def test_build_settings_matrix_default(self):
         """Test that default settings are extracted correctly as JAX arrays."""
         batch_specs = [
             BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.SELF_MEAN),
             BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.CHAIN_MEAN),
         ]
-        info = extract_proposal_info_for_backend(batch_specs)
+        settings_matrix = build_settings_matrix(batch_specs)
 
         # API returns settings_matrix with shape (n_blocks, MAX_SETTINGS)
-        self.assertEqual(info['settings_matrix'].shape[0], 2)
+        self.assertEqual(settings_matrix.shape[0], 2)
         # Default alpha values should be applied
-        alpha_values = info['settings_matrix'][:, SettingSlot.ALPHA]
+        alpha_values = settings_matrix[:, SettingSlot.ALPHA]
         np.testing.assert_array_almost_equal(alpha_values, [self.DEFAULT_ALPHA, self.DEFAULT_ALPHA])
-        self.assertTrue(jnp.array_equal(info['proposal_types'], jnp.array([0, 1])))
 
-    def test_extract_proposal_info_with_alpha(self):
+    def test_build_settings_matrix_with_alpha(self):
         """Test that alpha setting is extracted for MIXTURE proposal."""
         batch_specs = [
             BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.MIXTURE,
@@ -345,25 +339,23 @@ class TestProposalSettings(unittest.TestCase):
             BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.MIXTURE,
                      settings={'alpha': 0.7}),
         ]
-        info = extract_proposal_info_for_backend(batch_specs)
+        settings_matrix = build_settings_matrix(batch_specs)
 
-        self.assertEqual(info['settings_matrix'].shape[0], 2)
+        self.assertEqual(settings_matrix.shape[0], 2)
         # User-provided alpha values should be extracted
-        alpha_values = info['settings_matrix'][:, SettingSlot.ALPHA]
+        alpha_values = settings_matrix[:, SettingSlot.ALPHA]
         np.testing.assert_array_almost_equal(alpha_values, [0.3, 0.7])
-        self.assertTrue(jnp.array_equal(info['proposal_types'], jnp.array([2, 2])))
 
-    def test_extract_proposal_info_direct_sampler(self):
+    def test_build_settings_matrix_direct_sampler(self):
         """Test that direct samplers get default settings (for JAX array compatibility)."""
         batch_specs = [
             BlockSpec(2, SamplerType.DIRECT_CONJUGATE, direct_sampler_fn=lambda x: x),
         ]
-        info = extract_proposal_info_for_backend(batch_specs)
+        settings_matrix = build_settings_matrix(batch_specs)
 
         # Direct samplers also get default settings for JAX array structure
-        alpha_values = info['settings_matrix'][:, SettingSlot.ALPHA]
+        alpha_values = settings_matrix[:, SettingSlot.ALPHA]
         np.testing.assert_array_almost_equal(alpha_values, [self.DEFAULT_ALPHA])
-        self.assertEqual(int(info['proposal_types'][0]), 0)
 
     def test_mixture_proposal_type_enum(self):
         """Test that MIXTURE is properly defined in ProposalType enum."""

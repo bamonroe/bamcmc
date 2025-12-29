@@ -42,6 +42,11 @@ Example:
     from bamcmc import reset_from_checkpoint
     init_vector, info = reset_from_checkpoint('checkpoint.npz', 'my_model', n_subjects=100, K=50, M=20)
 """
+# CRITICAL: Import jax_config FIRST to set environment variables before JAX loads
+from . import jax_config  # noqa: F401
+
+# Import mcmc_backend to register BlockArrays pytree
+from . import mcmc_backend as _mcmc_backend  # noqa: F401
 
 from .registry import register_posterior, get_posterior, list_posteriors
 from .batch_specs import BlockSpec, SamplerType, ProposalType, create_subject_blocks

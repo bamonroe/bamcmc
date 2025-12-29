@@ -3,11 +3,10 @@ import jax.numpy as jnp
 import jax.random as random
 from functools import partial
 from typing import List, Dict, Tuple, Any, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import numpy as np
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from .registry import get_posterior
 from .mcmc_utils import clean_config
@@ -35,11 +34,11 @@ from .checkpoint_helpers import (
 )
 
 # --- CONSTANTS ---
-CHUNK_SIZE = 100
+CHUNK_SIZE = 20
 NUGGET = 1e-5
 
 # --- COMPILED FUNCTION CACHE ---
-# Cache compiled MCMC kernels by configuration hash
+# Cache compiled MCMC kernels by configuration hash (in-memory, within session)
 _COMPILED_KERNEL_CACHE = {}
 
 
@@ -75,6 +74,62 @@ def _compute_cache_key(mcmc_config, data, block_arrays):
     return key
 
 
+# --- MODULE-LEVEL MCMC FUNCTIONS FOR CROSS-SESSION CACHING ---
+# These functions are defined at module level (not inside rmcmc) so that
+# JAX's disk cache can recognize identical traces across Python sessions.
+
+def _run_mcmc_chunk(carry, data_int, data_float, data_static, block_arrays,
+                    run_params, posterior_id):
+    """
+    Module-level MCMC chunk runner for cache-stable tracing.
+
+    By defining this at module level and passing data as explicit arguments
+    (not captured via closure), JAX's disk cache can recognize identical
+    traces across Python sessions.
+
+    Args:
+        carry: MCMC state tuple
+        data_int: Tuple of integer data arrays (traced)
+        data_float: Tuple of float data arrays (traced)
+        data_static: Tuple of static values like n_subjects (static)
+        block_arrays: BlockArrays dataclass (traced - contains arrays)
+        run_params: RunParams frozen dataclass (static - no arrays)
+        posterior_id: String identifier for posterior (static)
+
+    Returns:
+        Updated carry tuple and scan outputs
+    """
+    # Reconstruct data dict inside trace
+    data = {
+        'int': data_int,
+        'float': data_float,
+        'static': data_static
+    }
+
+    # Get posterior functions from registry
+    # These are the same module-level functions each session
+    model_config = get_posterior(posterior_id)
+    log_post_fn = model_config['log_posterior']
+    direct_sampler_fn = model_config['direct_sampler']
+    gq_fn = model_config.get('generated_quantities')
+
+    # Create scan body with data bound inside trace
+    # Using partial inside the traced function makes the data binding
+    # part of the trace, not a closure
+    # Note: mcmc_scan_body_offload is defined later in this file
+    scan_body = partial(
+        mcmc_scan_body_offload,
+        log_post_fn=partial(log_post_fn, data=data),
+        direct_sampler_fn=partial(direct_sampler_fn, data=data),
+        gq_fn=partial(gq_fn, data=data) if gq_fn else None,
+        block_arrays=block_arrays,
+        run_params=run_params
+    )
+
+    chunk_range = jnp.arange(CHUNK_SIZE)
+    return jax.lax.scan(scan_body, carry, chunk_range)
+
+
 # --- DATA STRUCTURES ---
 
 @dataclass(frozen=True)
@@ -86,6 +141,7 @@ class BlockArrays:
     All arrays are JAX arrays ready for use in the sampling loop.
 
     This is a frozen dataclass for immutability and JAX compatibility.
+    Registered as a JAX pytree to enable tracing through JIT.
     """
     indices: jnp.ndarray         # (n_blocks, max_block_size) - parameter indices per block
     types: jnp.ndarray           # (n_blocks,) - SamplerType for each block
@@ -95,6 +151,54 @@ class BlockArrays:
     max_size: int                # Maximum block size
     num_blocks: int              # Number of blocks
     total_params: int            # Total parameter count
+
+
+def _block_arrays_flatten(ba):
+    """Flatten BlockArrays for JAX pytree."""
+    # Arrays are children (traced), scalars are auxiliary data (static)
+    children = (ba.indices, ba.types, ba.masks, ba.proposal_types, ba.settings_matrix)
+    aux_data = (ba.max_size, ba.num_blocks, ba.total_params)
+    return children, aux_data
+
+
+def _block_arrays_unflatten(aux_data, children):
+    """Unflatten BlockArrays from JAX pytree."""
+    indices, types, masks, proposal_types, settings_matrix = children
+    max_size, num_blocks, total_params = aux_data
+    return BlockArrays(
+        indices=indices,
+        types=types,
+        masks=masks,
+        proposal_types=proposal_types,
+        settings_matrix=settings_matrix,
+        max_size=max_size,
+        num_blocks=num_blocks,
+        total_params=total_params
+    )
+
+
+# Register BlockArrays as a JAX pytree
+jax.tree_util.register_pytree_node(
+    BlockArrays,
+    _block_arrays_flatten,
+    _block_arrays_unflatten
+)
+
+
+@dataclass(frozen=True)
+class RunParams:
+    """
+    Immutable run parameters for JAX static argument compatibility.
+
+    This frozen dataclass allows run parameters to be passed as static
+    arguments to JIT-compiled functions, enabling cross-session caching.
+    """
+    BURN_ITER: int
+    NUM_COLLECT: int
+    THIN_ITERATION: int
+    NUM_GQ: int
+    START_ITERATION: int
+    SAVE_LIKELIHOODS: bool
 
 
 def build_block_arrays(specs: List[BlockSpec], start_idx: int = 0) -> BlockArrays:
@@ -147,32 +251,7 @@ def build_block_arrays(specs: List[BlockSpec], start_idx: int = 0) -> BlockArray
     )
 
 
-# --- NUMERICAL STABILITY FUNCTIONS ---
-
-def extract_proposal_info_for_backend(specs: List[BlockSpec]) -> Dict[str, jnp.ndarray]:
-    """
-    Extract proposal type information from BlockSpec list.
-
-    Returns: Dict with:
-        'proposal_types': integer array of ProposalType values
-        'settings_matrix': JAX array of shape (n_blocks, MAX_SETTINGS)
-
-    Settings are stored in a single matrix for efficient O(1) lookup.
-    Each proposal accesses settings by position using SettingSlot indices.
-    """
-    proposal_types = []
-
-    for spec in specs:
-        if spec.is_mh_sampler():
-            proposal_types.append(int(spec.proposal_type))
-        else:
-            proposal_types.append(0)
-
-    return {
-        'proposal_types': jnp.array(proposal_types, dtype=jnp.int32),
-        'settings_matrix': build_settings_matrix(specs),
-    }
-
+# --- VALIDATION ---
 
 def validate_mcmc_inputs(config: Dict[str, Any], data: Dict[str, Any], specs: List[BlockSpec]) -> bool:
     """Validate MCMC inputs before starting sampling."""
@@ -211,35 +290,6 @@ def gen_rng_keys(mcmc_config: Dict[str, Any]) -> Dict[str, Any]:
     return mcmc_config
 
 
-def parse_block_specs(specs: List[BlockSpec], start_idx: int = 0) -> Dict[str, Any]:
-    """Parse BlockSpec objects into backend format."""
-    if not specs:
-        raise ValueError("Empty block specifications")
-
-    max_size = max(spec.size for spec in specs)
-    num_blocks = len(specs)
-
-    indices = np.full((num_blocks, max_size), -1, dtype=np.int32)
-    types = np.zeros(num_blocks, dtype=np.int32)
-    masks = np.zeros((num_blocks, max_size), dtype=np.float32)
-
-    current_param = start_idx
-    for i, spec in enumerate(specs):
-        types[i] = int(spec.sampler_type)
-        block_idxs = np.arange(current_param, current_param + spec.size)
-        indices[i, :spec.size] = block_idxs
-        masks[i, :spec.size] = 1.0
-        current_param += spec.size
-
-    return {
-        'indices': jnp.array(indices),
-        'types': jnp.array(types),
-        'masks': jnp.array(masks),
-        'max_size': max_size,
-        'num_blocks': num_blocks,
-        'total_params': current_param
-    }
-
 def configure_mcmc_system(
     mcmc_config: Dict[str, Any],
     data: Dict[str, Any]
@@ -255,9 +305,8 @@ def configure_mcmc_system(
     mcmc_config = clean_config(mcmc_config)
     mcmc_config.setdefault('SAVE_LIKELIHOODS', False)
 
-    cache_path = Path.cwd() / "jax_cache"
-    cache_path.mkdir(parents=True, exist_ok=True)
-    jax.config.update("jax_compilation_cache_dir", str(cache_path))
+    # JAX persistent cache is configured via environment variables in jax_config.py
+    # JAX_COMPILATION_CACHE_DIR → ~/.cache/jax/bamcmc_cache/
 
     use_double = mcmc_config.get('USE_DOUBLE')
     posterior_id = mcmc_config.get('POSTERIOR_ID')
@@ -312,6 +361,16 @@ def configure_mcmc_system(
     # Build unified BlockArrays structure
     block_arrays = build_block_arrays(raw_batch_specs)
 
+    # Create RunParams as frozen dataclass for JAX static argument compatibility
+    run_params = RunParams(
+        BURN_ITER=burn_iter,
+        NUM_COLLECT=num_collect,
+        THIN_ITERATION=thin_iteration,
+        NUM_GQ=num_gq,
+        START_ITERATION=0,  # Set to checkpoint iteration when resuming
+        SAVE_LIKELIHOODS=mcmc_config['SAVE_LIKELIHOODS'],
+    )
+
     model_context = {
         'log_posterior_fn': log_posterior_fn,
         'direct_sampler_fn': direct_sampler_fn,
@@ -319,14 +378,7 @@ def configure_mcmc_system(
         'generated_quantities_fn': gq_fn,
         'block_arrays': block_arrays,
         'block_specs': raw_batch_specs,  # Keep for labels/debugging
-        'run_params': {
-            'THIN_ITERATION': thin_iteration,
-            'NUM_COLLECT': num_collect,
-            'BURN_ITER': burn_iter,
-            'NUM_GQ': num_gq,
-            'SAVE_LIKELIHOODS': mcmc_config['SAVE_LIKELIHOODS'],
-            'START_ITERATION': 0  # Set to checkpoint iteration when resuming
-        }
+        'run_params': run_params,
     }
 
     return mcmc_config, data, model_context
@@ -680,21 +732,35 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, direct_sampler_fn, gq_f
     updated_acceptance_counts = acceptance_counts + block_accept_counts_iter
 
     # Compute iteration relative to this run's start (for resume support)
-    run_iteration = current_iteration - run_params['START_ITERATION']
-    is_after_burn_in = (run_iteration >= run_params['BURN_ITER'])
-    collection_iteration = run_iteration - run_params['BURN_ITER']
-    is_thin_iter = (collection_iteration + 1) % run_params['THIN_ITERATION'] == 0
+    # Support both dict and RunParams dataclass for backwards compatibility
+    if isinstance(run_params, dict):
+        start_iter = run_params['START_ITERATION']
+        burn_iter = run_params['BURN_ITER']
+        thin_iter = run_params['THIN_ITERATION']
+        num_collect = run_params['NUM_COLLECT']
+        num_gq = run_params['NUM_GQ']
+    else:
+        start_iter = run_params.START_ITERATION
+        burn_iter = run_params.BURN_ITER
+        thin_iter = run_params.THIN_ITERATION
+        num_collect = run_params.NUM_COLLECT
+        num_gq = run_params.NUM_GQ
+
+    run_iteration = current_iteration - start_iter
+    is_after_burn_in = (run_iteration >= burn_iter)
+    collection_iteration = run_iteration - burn_iter
+    is_thin_iter = (collection_iteration + 1) % thin_iter == 0
 
     next_history = history_array
     next_lik_history = lik_history_array
 
-    if run_params['NUM_COLLECT'] > 0:
-        thin_idx = collection_iteration // run_params['THIN_ITERATION']
-        should_save = is_after_burn_in & is_thin_iter & (thin_idx >= 0) & (thin_idx < run_params['NUM_COLLECT'])
+    if num_collect > 0:
+        thin_idx = collection_iteration // thin_iter
+        should_save = is_after_burn_in & is_thin_iter & (thin_idx >= 0) & (thin_idx < num_collect)
 
         def save_params(h_array):
              return h_array.at[thin_idx].set(
-                _save_with_gq(next_states_A, next_states_B, gq_fn, run_params['NUM_GQ'])
+                _save_with_gq(next_states_A, next_states_B, gq_fn, num_gq)
             )
 
         next_history = jax.lax.cond(should_save, save_params, lambda h: h, history_array)
@@ -866,12 +932,13 @@ def rmcmc(
         initial_carry, mcmc_config = initialize_from_checkpoint(
             checkpoint,
             mcmc_config,
-            num_gq=run_params['NUM_GQ'],
-            num_collect=run_params['NUM_COLLECT'],
+            num_gq=run_params.NUM_GQ,
+            num_collect=run_params.NUM_COLLECT,
             num_blocks=block_arrays.num_blocks
         )
         # Set START_ITERATION for resumed runs so collection indices are computed correctly
-        run_params['START_ITERATION'] = checkpoint['iteration']
+        # Use replace() since RunParams is frozen
+        run_params = replace(run_params, START_ITERATION=checkpoint['iteration'])
 
     elif reset_from is not None:
         # Reset chains to cross-chain mean with noise
@@ -899,12 +966,12 @@ def rmcmc(
         initial_carry, mcmc_config = initialize_mcmc_system(
             initial_vector_np,
             mcmc_config,
-            num_gq=run_params['NUM_GQ'],
-            num_collect=run_params['NUM_COLLECT'],
+            num_gq=run_params.NUM_GQ,
+            num_collect=run_params.NUM_COLLECT,
             num_blocks=block_arrays.num_blocks
         )
         # Reset starts fresh (iteration 0), not from checkpoint iteration
-        run_params['START_ITERATION'] = 0
+        # run_params already has START_ITERATION=0 from configure_mcmc_system
         print(f"  Reset complete - starting fresh from iteration 0")
 
     else:
@@ -914,47 +981,73 @@ def rmcmc(
         initial_carry, mcmc_config = initialize_mcmc_system(
             initial_vector_np,
             mcmc_config,
-            num_gq=run_params['NUM_GQ'],
-            num_collect=run_params['NUM_COLLECT'],
+            num_gq=run_params.NUM_GQ,
+            num_collect=run_params.NUM_COLLECT,
             num_blocks=block_arrays.num_blocks
         )
 
     print(f"JAX backend: {jax.default_backend()}")
     print(f"Likelihood Saving: {'ENABLED' if mcmc_config['SAVE_LIKELIHOODS'] else 'DISABLED'}")
 
-    # Check cache for compiled kernel
+    # Check in-memory cache for compiled kernel
     cache_key = _compute_cache_key(mcmc_config, data, block_arrays)
     compiled_chunk = _COMPILED_KERNEL_CACHE.get(cache_key)
 
+    # Prepare data for passing as traced arguments (enables cross-session caching)
+    data_int = data['int']
+    data_float = data['float']
+    data_static = tuple(data['static'])
+    posterior_id = mcmc_config['POSTERIOR_ID']
+
     if compiled_chunk is not None:
-        print("Using cached kernel (skip compilation)", flush=True)
+        print("Using cached kernel (in-memory)", flush=True)
         # No compilation needed - set time to 0
         compile_start = time.perf_counter()
         compile_end = compile_start  # Zero compile time
     else:
-        scan_body_configured = partial(
-            mcmc_scan_body_offload,
-            log_post_fn       = model_ctx['log_posterior_fn'],
-            direct_sampler_fn = model_ctx['direct_sampler_fn'],
-            gq_fn             = model_ctx['generated_quantities_fn'],
-            block_arrays      = block_arrays,
-            run_params        = run_params
+        # Use module-level function for deterministic tracing
+        # JAX's persistent cache (JAX_COMPILATION_CACHE_DIR) will cache
+        # the compiled kernel across sessions automatically
+        # Static args: data_static (array sizes), run_params, posterior_id
+        # block_arrays contains JAX arrays so must be traced
+        jitted_fn = jax.jit(
+            _run_mcmc_chunk,
+            static_argnums=(3, 5, 6)  # data_static, run_params, posterior_id
         )
-
-        chunk_range = jnp.arange(CHUNK_SIZE)
-        def run_chunk(carry):
-            return jax.lax.scan(scan_body_configured, carry, chunk_range)
 
         print("Compiling kernel... ", end="", flush=True)
         compile_start = time.perf_counter()
-        compiled_chunk = jax.jit(run_chunk).lower(initial_carry).compile()
-        jax.block_until_ready(compiled_chunk(initial_carry))
+
+        # Compile by calling the jitted function
+        # If JAX's persistent cache has a hit, this will be fast
+        result = jitted_fn(
+            initial_carry,
+            data_int,
+            data_float,
+            data_static,
+            block_arrays,
+            run_params,
+            posterior_id
+        )
+        jax.block_until_ready(result)
         compile_end = time.perf_counter()
         print(f"Done ({compile_end - compile_start:.4f}s)")
 
-        # Cache the compiled kernel
+        # Create wrapper that matches the interface (takes just carry)
+        def compiled_chunk(carry):
+            return jitted_fn(
+                carry,
+                data_int,
+                data_float,
+                data_static,
+                block_arrays,
+                run_params,
+                posterior_id
+            )
+
+        # Cache the compiled kernel wrapper for in-memory reuse
         _COMPILED_KERNEL_CACHE[cache_key] = compiled_chunk
-        print(f"Kernel cached (key: {mcmc_config['POSTERIOR_ID']}, {mcmc_config['NUM_CHAINS']} chains)")
+        print(f"Kernel cached (key: {posterior_id}, {mcmc_config['NUM_CHAINS']} chains)")
 
     benchmark_iters = mcmc_config.get('BENCHMARK', 0)
     avg_time = None
@@ -962,11 +1055,11 @@ def rmcmc(
         results = benchmark_mcmc_sampler(compiled_chunk, initial_carry, benchmark_iters)
         avg_time = results['avg_time']
 
-    total_iterations_to_run = run_params['BURN_ITER'] + mcmc_config["NUM_ITERATIONS"]
+    total_iterations_to_run = run_params.BURN_ITER + mcmc_config["NUM_ITERATIONS"]
     host_history = None
     host_lik_history = None
 
-    if total_iterations_to_run > 0 and run_params['NUM_COLLECT'] > 0:
+    if total_iterations_to_run > 0 and run_params.NUM_COLLECT > 0:
         print("\n--- MCMC RUN ---")
         if avg_time:
             compute_time_sec = avg_time * total_iterations_to_run

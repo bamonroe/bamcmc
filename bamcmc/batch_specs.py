@@ -180,36 +180,8 @@ class BlockSpec:
 
 
 # ============================================================================
-# BATCH SPECIFICATION CONVERSION
+# VALIDATION
 # ============================================================================
-
-def specs_from_legacy_tuples(tuples: List[tuple]) -> List[BlockSpec]:
-    """
-    Convert legacy (size, type) tuples to BlockSpec objects.
-
-    Args:
-        tuples: List of (size, type) tuples
-
-    Returns:
-        List of BlockSpec objects
-
-    Example:
-        >>> legacy = [(2, 0), (1, 1)]
-        >>> specs = specs_from_legacy_tuples(legacy)
-        >>> specs[0].sampler_type
-        <SamplerType.METROPOLIS_HASTINGS: 0>
-    """
-    specs = []
-    for i, (size, stype) in enumerate(tuples):
-        spec = BlockSpec(
-            size=size,
-            sampler_type=SamplerType(stype),
-            label=f"Block_{i}"
-        )
-        specs.append(spec)
-    return specs
-
-
 
 def validate_block_specs(specs: List[BlockSpec], model_name: str = "") -> None:
     """
