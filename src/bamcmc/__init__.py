@@ -64,3 +64,8 @@ from .reset_utils import (
     reset_from_checkpoint,
     print_reset_summary,
 )
+from .posterior_benchmark import (
+    PosteriorBenchmarkManager,
+    get_manager as get_benchmark_manager,
+    compute_posterior_hash,
+)

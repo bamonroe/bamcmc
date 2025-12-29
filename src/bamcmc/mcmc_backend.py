@@ -33,6 +33,13 @@ from .checkpoint_helpers import (
     compute_rhat_from_history,
 )
 
+# Import posterior benchmarking system
+from .posterior_benchmark import (
+    get_manager as get_benchmark_manager,
+    compute_posterior_hash,
+    get_posterior_hash,
+)
+
 # --- CONSTANTS ---
 CHUNK_SIZE = 100
 NUGGET = 1e-5
@@ -379,6 +386,7 @@ def configure_mcmc_system(
         'block_arrays': block_arrays,
         'block_specs': raw_batch_specs,  # Keep for labels/debugging
         'run_params': run_params,
+        'model_config': model_config,  # For posterior hash computation
     }
 
     return mcmc_config, data, model_context
@@ -912,6 +920,16 @@ def rmcmc(
     block_arrays = model_ctx['block_arrays']
     block_specs = model_ctx['block_specs']
 
+    # Compute posterior hash for persistent benchmarking
+    posterior_id = mcmc_config['POSTERIOR_ID']
+    posterior_hash = get_posterior_hash(
+        posterior_id,
+        model_ctx['model_config'],
+        data
+    )
+    benchmark_mgr = get_benchmark_manager()
+    cached_benchmark = benchmark_mgr.get_cached_benchmark(posterior_hash)
+
     print("Validating inputs...", flush=True)
     try:
         validate_mcmc_inputs(mcmc_config, data, block_specs)
@@ -1005,54 +1023,69 @@ def rmcmc(
         compile_start = time.perf_counter()
         compile_end = compile_start  # Zero compile time
     else:
-        # Original AOT compilation approach - uses closure capture for data
-        # This has better memory management than traced argument approach
-        model_config = get_posterior(posterior_id)
-        log_post_fn = model_config['log_posterior']
-        direct_sampler_fn = model_config['direct_sampler']
-        gq_fn = model_config.get('generated_quantities')
+        # Module-level function approach for reliable compilation.
+        # Note: Closure-based approach would be faster per-iteration but hangs
+        # during compilation for complex kernels like this MCMC sampler.
 
-        # Reconstruct data dict for the functions
-        data = {
-            'int': data_int,
-            'float': data_float,
-            'static': data_static
-        }
-
-        # Create scan body with closures (original approach)
-        scan_body = partial(
-            mcmc_scan_body_offload,
-            log_post_fn=partial(log_post_fn, data=data),
-            direct_sampler_fn=partial(direct_sampler_fn, data=data),
-            gq_fn=partial(gq_fn, data=data) if gq_fn else None,
-            block_arrays=block_arrays,
-            run_params=run_params
+        # Create JIT wrapper with static arguments for cache-stable compilation
+        run_chunk_jit = jax.jit(
+            _run_mcmc_chunk,
+            static_argnames=('data_static', 'run_params', 'posterior_id')
         )
-
-        chunk_range = jnp.arange(CHUNK_SIZE)
-
-        def run_chunk(carry):
-            return jax.lax.scan(scan_body, carry, chunk_range)
 
         print("Compiling kernel... ", end="", flush=True)
         compile_start = time.perf_counter()
 
-        # Use AOT compilation via .lower().compile() - better memory management
-        compiled_chunk = jax.jit(run_chunk).lower(initial_carry).compile()
-        jax.block_until_ready(compiled_chunk(initial_carry))
+        # AOT compilation with explicit arguments
+        compiled_fn = run_chunk_jit.lower(
+            initial_carry, data_int, data_float, data_static,
+            block_arrays, run_params, posterior_id
+        ).compile()
 
         compile_end = time.perf_counter()
         print(f"Done ({compile_end - compile_start:.4f}s)")
+
+        # Create wrapper that binds data arguments (they don't change during run)
+        _cf = compiled_fn
+        _di, _df, _ba = data_int, data_float, block_arrays
+        def compiled_chunk(carry):
+            return _cf(carry, _di, _df, _ba)
 
         # Cache the compiled kernel for in-memory reuse
         _COMPILED_KERNEL_CACHE[cache_key] = compiled_chunk
         print(f"Kernel cached (key: {posterior_id}, {mcmc_config['NUM_CHAINS']} chains)")
 
+    # --- BENCHMARKING ---
+    # Check for cached benchmark first, then run if needed
     benchmark_iters = mcmc_config.get('BENCHMARK', 0)
     avg_time = None
-    if benchmark_iters > 0:
+    fresh_compile_time = compile_end - compile_start
+
+    if cached_benchmark is not None:
+        # Use cached benchmark values
+        cached_results = cached_benchmark.get('results', {})
+        avg_time = cached_results.get('iteration_time_s')
+        if avg_time:
+            print(f"\n--- Using Cached Benchmark (hash: {posterior_hash[:8]}...) ---")
+            print(f"  Per-iteration: {avg_time:.4f}s (from cache)")
+            cached_git = cached_benchmark.get('git', {})
+            if cached_git:
+                print(f"  Cached from: {cached_git.get('branch', '?')}@{cached_git.get('commit', '?')}")
+    elif benchmark_iters > 0:
+        # Run benchmark and save results
         results = benchmark_mcmc_sampler(compiled_chunk, initial_carry, benchmark_iters)
         avg_time = results['avg_time']
+
+        # Save benchmark for future use
+        benchmark_mgr.save_benchmark(
+            posterior_hash=posterior_hash,
+            posterior_id=posterior_id,
+            num_chains=mcmc_config['NUM_CHAINS'],
+            fresh_compile_time=fresh_compile_time,
+            iteration_time=avg_time,
+            benchmark_iterations=benchmark_iters,
+        )
+        print(f"  Benchmark saved (hash: {posterior_hash[:8]}...)")
 
     total_iterations_to_run = run_params.BURN_ITER + mcmc_config["NUM_ITERATIONS"]
     host_history = None
