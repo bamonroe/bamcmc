@@ -4,9 +4,14 @@ JAX Configuration - MUST be imported before any JAX imports.
 This module sets environment variables for JAX configuration including:
 - Persistent compilation cache directory
 - Minimum compile time threshold for caching
+- GPU memory allocator settings
 """
 import os
 from pathlib import Path
+
+# --- GPU MEMORY ALLOCATOR ---
+# Use async allocator to reduce fragmentation (recommended by JAX for large models)
+os.environ.setdefault("TF_GPU_ALLOCATOR", "cuda_malloc_async")
 
 # --- PERSISTENT COMPILATION CACHE ---
 # Enables cross-session caching of compiled kernels

@@ -34,7 +34,7 @@ from .checkpoint_helpers import (
 )
 
 # --- CONSTANTS ---
-CHUNK_SIZE = 20
+CHUNK_SIZE = 100
 NUGGET = 1e-5
 
 # --- COMPILED FUNCTION CACHE ---
@@ -1005,47 +1005,46 @@ def rmcmc(
         compile_start = time.perf_counter()
         compile_end = compile_start  # Zero compile time
     else:
-        # Use module-level function for deterministic tracing
-        # JAX's persistent cache (JAX_COMPILATION_CACHE_DIR) will cache
-        # the compiled kernel across sessions automatically
-        # Static args: data_static (array sizes), run_params, posterior_id
-        # block_arrays contains JAX arrays so must be traced
-        jitted_fn = jax.jit(
-            _run_mcmc_chunk,
-            static_argnums=(3, 5, 6)  # data_static, run_params, posterior_id
+        # Original AOT compilation approach - uses closure capture for data
+        # This has better memory management than traced argument approach
+        model_config = get_posterior(posterior_id)
+        log_post_fn = model_config['log_posterior']
+        direct_sampler_fn = model_config['direct_sampler']
+        gq_fn = model_config.get('generated_quantities')
+
+        # Reconstruct data dict for the functions
+        data = {
+            'int': data_int,
+            'float': data_float,
+            'static': data_static
+        }
+
+        # Create scan body with closures (original approach)
+        scan_body = partial(
+            mcmc_scan_body_offload,
+            log_post_fn=partial(log_post_fn, data=data),
+            direct_sampler_fn=partial(direct_sampler_fn, data=data),
+            gq_fn=partial(gq_fn, data=data) if gq_fn else None,
+            block_arrays=block_arrays,
+            run_params=run_params
         )
+
+        chunk_range = jnp.arange(CHUNK_SIZE)
+
+        def run_chunk(carry):
+            return jax.lax.scan(scan_body, carry, chunk_range)
 
         print("Compiling kernel... ", end="", flush=True)
         compile_start = time.perf_counter()
 
-        # Compile by calling the jitted function
-        # If JAX's persistent cache has a hit, this will be fast
-        result = jitted_fn(
-            initial_carry,
-            data_int,
-            data_float,
-            data_static,
-            block_arrays,
-            run_params,
-            posterior_id
-        )
-        jax.block_until_ready(result)
+        # Use AOT compilation via .lower().compile() - better memory management
+        compiled_chunk = jax.jit(run_chunk).lower(initial_carry).compile()
+        jax.block_until_ready(compiled_chunk(initial_carry))
+
         compile_end = time.perf_counter()
         print(f"Done ({compile_end - compile_start:.4f}s)")
 
-        # Create wrapper that matches the interface (takes just carry)
-        def compiled_chunk(carry):
-            return jitted_fn(
-                carry,
-                data_int,
-                data_float,
-                data_static,
-                block_arrays,
-                run_params,
-                posterior_id
-            )
-
-        # Cache the compiled kernel wrapper for in-memory reuse
+        # Cache the compiled kernel for in-memory reuse
         _COMPILED_KERNEL_CACHE[cache_key] = compiled_chunk
         print(f"Kernel cached (key: {posterior_id}, {mcmc_config['NUM_CHAINS']} chains)")
 
