@@ -28,7 +28,7 @@ CHUNK_SIZE = 100
 _COMPILED_KERNEL_CACHE = {}
 
 
-def _compute_cache_key(mcmc_config: Dict[str, Any], data: Dict[str, Any], block_arrays: BlockArrays) -> Tuple:
+def _compute_cache_key(user_config: Dict[str, Any], data: Dict[str, Any], block_arrays: BlockArrays) -> Tuple:
     """
     Compute a cache key for the compiled MCMC kernel.
 
@@ -46,11 +46,11 @@ def _compute_cache_key(mcmc_config: Dict[str, Any], data: Dict[str, Any], block_
     static_shape = tuple(data['static']) if 'static' in data else ()
 
     key = (
-        mcmc_config['POSTERIOR_ID'],
-        mcmc_config['NUM_CHAINS'],
-        mcmc_config['USE_DOUBLE'],
-        mcmc_config.get('NUM_COLLECT', 0),
-        mcmc_config.get('SAVE_LIKELIHOODS', False),
+        user_config['posterior_id'],
+        user_config['num_chains'],
+        user_config['use_double'],
+        user_config.get('num_collect', 0),
+        user_config.get('save_likelihoods', False),
         block_arrays.num_blocks,
         block_arrays.max_size,
         int_shapes,
@@ -145,8 +145,8 @@ def benchmark_mcmc_sampler(compiled_chunk_fn, initial_carry, benchmark_iters: in
 
 
 def compile_mcmc_kernel(
-    mcmc_config: Dict[str, Any],
-    data: Dict[str, Any],
+    user_config: Dict[str, Any],
+    runtime_ctx: Dict[str, Any],
     block_arrays: BlockArrays,
     run_params: RunParams,
     initial_carry: Tuple
@@ -155,8 +155,8 @@ def compile_mcmc_kernel(
     Compile the MCMC kernel, using cache if available.
 
     Args:
-        mcmc_config: MCMC configuration dict
-        data: Data dict with 'int', 'float', 'static' keys
+        user_config: User configuration dict (serializable, no JAX types)
+        runtime_ctx: Runtime context dict with JAX-dependent objects (dtypes, data, keys)
         block_arrays: BlockArrays with block configuration
         run_params: RunParams with run configuration
         initial_carry: Initial MCMC state for tracing
@@ -164,15 +164,17 @@ def compile_mcmc_kernel(
     Returns:
         Tuple of (compiled_chunk_fn, compile_time)
     """
+    data = runtime_ctx['data']
+
     # Check in-memory cache for compiled kernel
-    cache_key = _compute_cache_key(mcmc_config, data, block_arrays)
+    cache_key = _compute_cache_key(user_config, data, block_arrays)
     compiled_chunk = _COMPILED_KERNEL_CACHE.get(cache_key)
 
     # Prepare data for passing as traced arguments (enables cross-session caching)
     data_int = data['int']
     data_float = data['float']
     data_static = tuple(data['static'])
-    posterior_id = mcmc_config['POSTERIOR_ID']
+    posterior_id = user_config['posterior_id']
 
     if compiled_chunk is not None:
         print("Using cached kernel (in-memory)", flush=True)
@@ -209,6 +211,6 @@ def compile_mcmc_kernel(
 
     # Cache the compiled kernel for in-memory reuse
     _COMPILED_KERNEL_CACHE[cache_key] = compiled_chunk
-    print(f"Kernel cached (key: {posterior_id}, {mcmc_config['NUM_CHAINS']} chains)")
+    print(f"Kernel cached (key: {posterior_id}, {user_config['num_chains']} chains)")
 
     return compiled_chunk, compile_time

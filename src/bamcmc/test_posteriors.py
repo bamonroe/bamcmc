@@ -80,9 +80,9 @@ def beta_bernoulli_pooled_gq(chain_state, data):
 
 def beta_bernoulli_pooled_initial_vector(mcmc_config, data):
     """Initialize theta_raw near 0 (which maps to theta ≈ 0.5)."""
-    num_chains = mcmc_config["NUM_CHAINS"]
+    num_chains = mcmc_config["num_chains"]
     # Only generate K distinct states for superchains; backend replicates for subchains
-    K = mcmc_config.get("NUM_SUPERCHAINS", num_chains)
+    K = mcmc_config.get("num_superchains", num_chains)
     init = np.random.normal(0.0, 0.5, (K, 1))
     # Pad to full size (backend expects num_chains rows, uses first K)
     if K < num_chains:
@@ -173,11 +173,11 @@ def normal_normal_pooled_gq(chain_state, data):
 
 def normal_normal_pooled_initial_vector(mcmc_config, data):
     """Initialize mu near the prior mean."""
-    num_chains = mcmc_config["NUM_CHAINS"]
+    num_chains = mcmc_config["num_chains"]
     mu_0 = data["static"][0]
     tau_0 = data["static"][1]
     # Only generate K distinct states for superchains; backend replicates for subchains
-    K = mcmc_config.get("NUM_SUPERCHAINS", num_chains)
+    K = mcmc_config.get("num_superchains", num_chains)
     init = np.random.normal(mu_0, tau_0, (K, 1))
     # Pad to full size (backend expects num_chains rows, uses first K)
     if K < num_chains:
@@ -410,7 +410,7 @@ def beta_bernoulli_hierarchical_gq(chain_state, data):
 
 def beta_bernoulli_hierarchical_initial_vector(mcmc_config, data):
     """Initialize all parameters."""
-    num_chains = mcmc_config["NUM_CHAINS"]
+    num_chains = mcmc_config["num_chains"]
     n_subjects = data["static"][2]
     
     total_params = n_subjects + 2
@@ -432,7 +432,7 @@ def beta_bernoulli_hierarchical_initial_vector(mcmc_config, data):
 
 def get_test_num_gq(mcmc_config, data):
     """Returns number of generated quantities for test models."""
-    posterior_id = mcmc_config.get("POSTERIOR_ID", "")
+    posterior_id = mcmc_config.get("posterior_id", "")
     
     if posterior_id == "test_beta_bernoulli_hierarchical":
         n_subjects = data["static"][2]

@@ -12,14 +12,14 @@ import numpy as np
 from pathlib import Path
 
 
-def save_checkpoint(filepath, carry, mcmc_config, metadata=None):
+def save_checkpoint(filepath, carry, user_config, metadata=None):
     """
     Save MCMC checkpoint to disk for resuming later.
 
     Args:
         filepath: Path to save checkpoint (.npz file)
         carry: Current MCMC carry tuple from run
-        mcmc_config: MCMC configuration dict
+        user_config: User configuration dict (serializable, no JAX types)
         metadata: Optional dict of additional metadata
 
     Saves:
@@ -39,12 +39,12 @@ def save_checkpoint(filepath, carry, mcmc_config, metadata=None):
         'iteration': int(iteration),
         'acceptance_counts': np.asarray(acceptance_counts),
         # Validation metadata
-        'posterior_id': mcmc_config['POSTERIOR_ID'],
-        'num_params': mcmc_config['num_params'],
-        'num_chains_a': mcmc_config['NUM_CHAINS_A'],
-        'num_chains_b': mcmc_config['NUM_CHAINS_B'],
-        'num_superchains': mcmc_config.get('NUM_SUPERCHAINS', 0),
-        'subchains_per_super': mcmc_config.get('SUBCHAINS_PER_SUPER', 0),
+        'posterior_id': user_config['posterior_id'],
+        'num_params': user_config['num_params'],
+        'num_chains_a': user_config['num_chains_a'],
+        'num_chains_b': user_config['num_chains_b'],
+        'num_superchains': user_config.get('num_superchains', 0),
+        'subchains_per_super': user_config.get('subchains_per_super', 0),
     }
 
     if metadata:
@@ -92,51 +92,53 @@ def load_checkpoint(filepath):
     return checkpoint
 
 
-def initialize_from_checkpoint(checkpoint, mcmc_config, num_gq, num_collect, num_blocks):
+def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num_collect, num_blocks):
     """
     Initialize MCMC carry from a checkpoint.
 
     Args:
         checkpoint: Dict from load_checkpoint()
-        mcmc_config: Current MCMC configuration
+        user_config: User configuration dict (serializable, no JAX types)
+        runtime_ctx: Runtime context dict with JAX-dependent objects (dtypes, data, keys)
         num_gq: Number of generated quantities
         num_collect: Number of samples to collect this run
         num_blocks: Number of parameter blocks
 
     Returns:
         initial_carry: Tuple ready for MCMC scan
-        mcmc_config: Updated config
+        user_config: Updated config with restored checkpoint values
     """
     # Import JAX here to avoid import at module level (keeps module lightweight)
     import jax.numpy as jnp
 
     # Validate checkpoint matches current config
-    if checkpoint['posterior_id'] != mcmc_config['POSTERIOR_ID']:
+    if checkpoint['posterior_id'] != user_config['posterior_id']:
         raise ValueError(
             f"Checkpoint posterior '{checkpoint['posterior_id']}' doesn't match "
-            f"current config '{mcmc_config['POSTERIOR_ID']}'"
+            f"current config '{user_config['posterior_id']}'"
         )
 
-    if checkpoint['num_chains_a'] != mcmc_config['NUM_CHAINS_A']:
+    if checkpoint['num_chains_a'] != user_config['num_chains_a']:
         raise ValueError(
             f"Checkpoint has {checkpoint['num_chains_a']} A-chains, "
-            f"config has {mcmc_config['NUM_CHAINS_A']}"
+            f"config has {user_config['num_chains_a']}"
         )
 
-    if checkpoint['num_chains_b'] != mcmc_config['NUM_CHAINS_B']:
+    if checkpoint['num_chains_b'] != user_config['num_chains_b']:
         raise ValueError(
             f"Checkpoint has {checkpoint['num_chains_b']} B-chains, "
-            f"config has {mcmc_config['NUM_CHAINS_B']}"
+            f"config has {user_config['num_chains_b']}"
         )
 
-    dtype = mcmc_config["jnp_float_dtype"]
-    num_chains = mcmc_config["NUM_CHAINS"]
+    dtype = runtime_ctx['jnp_float_dtype']
+    num_chains = user_config['num_chains']
     num_params = checkpoint['num_params']
-    mcmc_config["num_params"] = num_params
 
-    # Restore superchain structure
-    mcmc_config['NUM_SUPERCHAINS'] = checkpoint['num_superchains']
-    mcmc_config['SUBCHAINS_PER_SUPER'] = checkpoint['subchains_per_super']
+    # Update user_config with checkpoint values
+    user_config = user_config.copy()
+    user_config['num_params'] = int(num_params)
+    user_config['num_superchains'] = int(checkpoint['num_superchains'])
+    user_config['subchains_per_super'] = int(checkpoint['subchains_per_super'])
 
     # Convert numpy arrays to JAX arrays
     states_A = jnp.asarray(checkpoint['states_A'], dtype=dtype)
@@ -148,7 +150,7 @@ def initialize_from_checkpoint(checkpoint, mcmc_config, num_gq, num_collect, num
     total_cols = num_params + num_gq
     initial_history = jnp.empty((num_collect, num_chains, total_cols), dtype=dtype)
 
-    if mcmc_config['SAVE_LIKELIHOODS']:
+    if user_config['save_likelihoods']:
         initial_lik_history = jnp.empty((num_collect, num_chains), dtype=dtype)
     else:
         initial_lik_history = jnp.empty((1,), dtype=dtype)
@@ -167,7 +169,7 @@ def initialize_from_checkpoint(checkpoint, mcmc_config, num_gq, num_collect, num
     initial_carry = (states_A, keys_A, states_B, keys_B,
                      initial_history, initial_lik_history, acceptance_counts, current_iteration)
 
-    return initial_carry, mcmc_config
+    return initial_carry, user_config
 
 
 # --- BATCH HISTORY UTILITIES ---

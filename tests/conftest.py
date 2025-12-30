@@ -1,0 +1,116 @@
+"""
+Pytest configuration and shared fixtures for bamcmc tests.
+"""
+
+import pytest
+import numpy as np
+import jax.numpy as jnp
+
+from bamcmc.batch_specs import BlockSpec, SamplerType, ProposalType
+from bamcmc.settings import SettingSlot, MAX_SETTINGS, SETTING_DEFAULTS
+from bamcmc.registry import register_posterior, _REGISTRY
+from bamcmc import test_posteriors
+
+
+@pytest.fixture
+def rng_seed():
+    """Default RNG seed for reproducible tests."""
+    return 42
+
+
+@pytest.fixture
+def basic_mcmc_config():
+    """Basic MCMC configuration for tests."""
+    return {
+        'NUM_CHAINS': 4,
+        'num_chains_a': 2,
+        'num_chains_b': 2,
+        'num_superchains': 4,
+        'jnp_float_dtype': jnp.float32,
+        'rng_seed': 42,
+        'save_likelihoods': False,
+    }
+
+
+@pytest.fixture
+def nested_mcmc_config():
+    """MCMC configuration with nested R-hat (M > 1)."""
+    return {
+        'NUM_CHAINS': 4,
+        'num_chains_a': 2,
+        'num_chains_b': 2,
+        'num_superchains': 2,  # M = 4/2 = 2
+        'jnp_float_dtype': jnp.float32,
+        'rng_seed': 42,
+        'save_likelihoods': False,
+    }
+
+
+@pytest.fixture
+def single_block_spec():
+    """Single parameter block for simple tests."""
+    return [
+        BlockSpec(
+            size=3,
+            sampler_type=SamplerType.METROPOLIS_HASTINGS,
+            proposal_type=ProposalType.SELF_MEAN,
+            label='block0'
+        )
+    ]
+
+
+@pytest.fixture
+def multi_block_specs():
+    """Multiple blocks of different types."""
+    return [
+        BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.SELF_MEAN),
+        BlockSpec(1, SamplerType.DIRECT_CONJUGATE, direct_sampler_fn=lambda x: x)
+    ]
+
+
+@pytest.fixture
+def register_test_posteriors():
+    """
+    Fixture to register test posteriors and clean up after test.
+
+    Usage:
+        def test_something(register_test_posteriors):
+            # Test posteriors are now registered
+            ...
+    """
+    # Save any existing registrations
+    original_registrations = {}
+    for name, config in test_posteriors.TEST_POSTERIORS.items():
+        if name in _REGISTRY:
+            original_registrations[name] = _REGISTRY[name]
+        register_posterior(name, config)
+
+    yield  # Run the test
+
+    # Restore original registry state
+    for name in test_posteriors.TEST_POSTERIORS.keys():
+        if name in original_registrations:
+            _REGISTRY[name] = original_registrations[name]
+        elif name in _REGISTRY:
+            del _REGISTRY[name]
+
+
+def make_settings_array(alpha=None, n_categories=None):
+    """
+    Create a settings array for testing proposal functions.
+
+    Args:
+        alpha: Mixture weight (default: 0.5)
+        n_categories: Number of categories for multinomial (default: 4)
+
+    Returns:
+        JAX array of shape (MAX_SETTINGS,) with specified values
+    """
+    settings = np.zeros(MAX_SETTINGS, dtype=np.float32)
+    for slot, default in SETTING_DEFAULTS.items():
+        settings[slot] = default
+    if alpha is not None:
+        settings[SettingSlot.ALPHA] = alpha
+    if n_categories is not None:
+        settings[SettingSlot.N_CATEGORIES] = n_categories
+    return jnp.array(settings)

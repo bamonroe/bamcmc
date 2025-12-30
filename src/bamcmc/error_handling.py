@@ -19,33 +19,33 @@ def validate_mcmc_config(mcmc_config):
     """
     errors = []
 
-    # Check required keys
-    required_keys = ['POSTERIOR_ID', 'NUM_CHAINS_A', 'NUM_CHAINS_B',
-                     'THIN_ITERATION', 'NUM_COLLECT']
+    # Check required keys (all lowercase)
+    required_keys = ['posterior_id', 'num_chains_a', 'num_chains_b',
+                     'thin_iteration', 'num_collect']
     for key in required_keys:
         if key not in mcmc_config:
             errors.append(f"Missing required config key: '{key}'")
 
     # Check numeric values
-    if 'NUM_CHAINS_A' in mcmc_config:
-        if mcmc_config['NUM_CHAINS_A'] < 1:
-            errors.append("NUM_CHAINS_A must be >= 1")
+    if 'num_chains_a' in mcmc_config:
+        if mcmc_config['num_chains_a'] < 1:
+            errors.append("num_chains_a must be >= 1")
 
-    if 'NUM_CHAINS_B' in mcmc_config:
-        if mcmc_config['NUM_CHAINS_B'] < 1:
-            errors.append("NUM_CHAINS_B must be >= 1")
+    if 'num_chains_b' in mcmc_config:
+        if mcmc_config['num_chains_b'] < 1:
+            errors.append("num_chains_b must be >= 1")
 
-    if 'THIN_ITERATION' in mcmc_config:
-        if mcmc_config['THIN_ITERATION'] < 1:
-            errors.append("THIN_ITERATION must be >= 1")
+    if 'thin_iteration' in mcmc_config:
+        if mcmc_config['thin_iteration'] < 1:
+            errors.append("thin_iteration must be >= 1")
 
-    if 'NUM_COLLECT' in mcmc_config:
-        if mcmc_config['NUM_COLLECT'] < 0:
-            errors.append("NUM_COLLECT must be >= 0")
+    if 'num_collect' in mcmc_config:
+        if mcmc_config['num_collect'] < 0:
+            errors.append("num_collect must be >= 0")
 
-    if 'BURN_ITER' in mcmc_config:
-        if mcmc_config['BURN_ITER'] < 0:
-            errors.append("BURN_ITER must be >= 0")
+    if 'burn_iter' in mcmc_config:
+        if mcmc_config['burn_iter'] < 0:
+            errors.append("burn_iter must be >= 0")
 
     if errors:
         raise ValueError("Invalid MCMC configuration:\n  " + "\n  ".join(errors))

@@ -16,6 +16,8 @@ Bayesian MCMC sampling package with coupled A/B chains and nested R-hat diagnost
 pip install -e .
 ```
 
+Requires JAX with CUDA support for GPU acceleration.
+
 ## Quick Start
 
 ```python
@@ -28,9 +30,27 @@ register_posterior('my_model', {
     'initial_vector': my_initial_vector_fn,
 })
 
-# Run MCMC
+# Run MCMC (all config keys are lowercase)
 from bamcmc.mcmc_backend import rmcmc
-history, diagnostics, config, likelihoods, checkpoint = rmcmc(mcmc_config, data)
+
+mcmc_config = {
+    'posterior_id': 'my_model',
+    'num_chains_a': 500,
+    'num_chains_b': 500,
+    'burn_iter': 1000,
+    'num_collect': 5000,
+    'thin_iteration': 10,
+}
+
+results, checkpoint = rmcmc(mcmc_config, data)
+history = results['history']
+diagnostics = results['diagnostics']
+```
+
+## Running Tests
+
+```bash
+pytest tests/ -v
 ```
 
 ## License

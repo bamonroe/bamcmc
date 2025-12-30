@@ -93,40 +93,39 @@ def run_benchmark(
             - compile_time: Time to compile kernel (seconds)
             - posterior_hash: Hash identifying the posterior configuration
             - comparison: Comparison dict if compare=True, else None
+            - user_config: Clean serializable config
     """
-    import jax
-
     # Ensure benchmark-only settings
     mcmc_config = mcmc_config.copy()
-    mcmc_config['NUM_COLLECT'] = 0
-    mcmc_config['BURN_ITER'] = 0
-    mcmc_config['SAVE_LIKELIHOODS'] = False
-    mcmc_config.setdefault('THIN_ITERATION', 1)
+    mcmc_config['num_collect'] = 0
+    mcmc_config['burn_iter'] = 0
+    mcmc_config['save_likelihoods'] = False
+    mcmc_config.setdefault('thin_iteration', 1)
 
     # Configure system
     print("Configuring MCMC system...")
-    mcmc_config, data, model_ctx = configure_mcmc_system(mcmc_config, data)
-    mcmc_config = gen_rng_keys(mcmc_config)
+    user_config, runtime_ctx, model_ctx = configure_mcmc_system(mcmc_config, data)
 
     run_params = model_ctx['run_params']
     block_arrays = model_ctx['block_arrays']
 
     # Compute posterior hash
-    posterior_id = mcmc_config['POSTERIOR_ID']
+    posterior_id = user_config['posterior_id']
     posterior_hash = get_posterior_hash(
         posterior_id,
         model_ctx['model_config'],
-        data
+        runtime_ctx['data']
     )
     print(f"Posterior hash: {posterior_hash}")
 
     # Initialize
     print("Generating initial vector...")
-    initial_vector_np = model_ctx['initial_vector_fn'](mcmc_config)
+    initial_vector_np = model_ctx['initial_vector_fn'](user_config)
 
-    initial_carry, mcmc_config = initialize_mcmc_system(
+    initial_carry, user_config = initialize_mcmc_system(
         initial_vector_np,
-        mcmc_config,
+        user_config,
+        runtime_ctx,
         num_gq=run_params.NUM_GQ,
         num_collect=run_params.NUM_COLLECT,
         num_blocks=block_arrays.num_blocks
@@ -136,12 +135,12 @@ def run_benchmark(
 
     # Compile kernel
     compiled_chunk, compile_time = compile_mcmc_kernel(
-        mcmc_config, data, block_arrays, run_params, initial_carry
+        user_config, runtime_ctx, block_arrays, run_params, initial_carry
     )
 
     # Run benchmark
-    results = benchmark_mcmc_sampler(compiled_chunk, initial_carry, benchmark_iterations)
-    iteration_time = results['avg_time']
+    bench_results = benchmark_mcmc_sampler(compiled_chunk, initial_carry, benchmark_iterations)
+    iteration_time = bench_results['avg_time']
 
     # Compare and optionally update cache
     benchmark_mgr = get_benchmark_manager()
@@ -161,7 +160,7 @@ def run_benchmark(
         benchmark_mgr.save_benchmark(
             posterior_hash=posterior_hash,
             posterior_id=posterior_id,
-            num_chains=mcmc_config['NUM_CHAINS'],
+            num_chains=user_config['num_chains'],
             fresh_compile_time=compile_time,
             iteration_time=iteration_time,
             benchmark_iterations=benchmark_iterations,
@@ -175,7 +174,7 @@ def run_benchmark(
         'compile_time': compile_time,
         'posterior_hash': posterior_hash,
         'comparison': comparison,
-        'mcmc_config': mcmc_config,
+        'user_config': user_config,
     }
 
 
@@ -186,7 +185,7 @@ def rmcmc(
     resume_from: Optional[str] = None,
     reset_from: Optional[str] = None,
     reset_noise_scale: float = 0.1
-) -> Tuple[np.ndarray, Dict[str, Any], Dict[str, Any], Optional[np.ndarray], Dict[str, Any]]:
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Run MCMC sampling with Unified Nested R-hat support.
 
@@ -199,10 +198,15 @@ def rmcmc(
         reset_noise_scale: Scale factor for noise when resetting (default 0.1)
 
     Returns:
-        history: Sample history array (num_collect, num_chains, num_params + num_gq)
-        diagnostics: Dict with R-hat values and timing info
-        mcmc_config: Updated configuration dict
-        lik_history: Likelihood history if SAVE_LIKELIHOODS=True, else None
+        results: Dict containing all sampling results:
+            - history: Sample array (num_collect, num_chains, num_params + num_gq)
+            - iterations: Iteration number for each sample
+            - diagnostics: Dict with R-hat values and timing info
+            - mcmc_config: Clean serializable config dict (no JAX types)
+            - likelihoods: Likelihood history if SAVE_LIKELIHOODS=True, else None
+            - K: Number of superchains
+            - M: Subchains per superchain
+            - thin_iteration: Thinning interval used
         checkpoint: Dict with final chain states for saving/resuming
 
     Notes:
@@ -220,32 +224,31 @@ def rmcmc(
         print(f"Invalid configuration:\n{e}")
         raise
 
-    mcmc_config, data, model_ctx = configure_mcmc_system(mcmc_config, data)
-    mcmc_config = gen_rng_keys(mcmc_config)
+    user_config, runtime_ctx, model_ctx = configure_mcmc_system(mcmc_config, data)
     run_params = model_ctx['run_params']
 
     block_arrays = model_ctx['block_arrays']
     block_specs = model_ctx['block_specs']
 
     # Compute posterior hash for persistent benchmarking
-    posterior_id = mcmc_config['POSTERIOR_ID']
+    posterior_id = user_config['posterior_id']
     posterior_hash = get_posterior_hash(
         posterior_id,
         model_ctx['model_config'],
-        data
+        runtime_ctx['data']
     )
     benchmark_mgr = get_benchmark_manager()
     cached_benchmark = benchmark_mgr.get_cached_benchmark(posterior_hash)
 
     print("Validating inputs...", flush=True)
     try:
-        validate_mcmc_inputs(mcmc_config, data, block_specs)
+        validate_mcmc_inputs(user_config, runtime_ctx['data'], block_specs)
         print("✓ Validation passed", flush=True)
     except ValueError as e:
         print(f"✗ Validation failed:\n{e}", flush=True)
         raise
 
-    print(f"Starting sampling for {mcmc_config['POSTERIOR_ID']}...", flush=True)
+    print(f"Starting sampling for {posterior_id}...", flush=True)
 
     # Initialize either from checkpoint, reset, or fresh
     if resume_from is not None and reset_from is not None:
@@ -254,9 +257,10 @@ def rmcmc(
     if resume_from is not None:
         print(f"Loading checkpoint from {resume_from}...")
         checkpoint = load_checkpoint(resume_from)
-        initial_carry, mcmc_config = initialize_from_checkpoint(
+        initial_carry, user_config = initialize_from_checkpoint(
             checkpoint,
-            mcmc_config,
+            user_config,
+            runtime_ctx,
             num_gq=run_params.NUM_GQ,
             num_collect=run_params.NUM_COLLECT,
             num_blocks=block_arrays.num_blocks
@@ -271,26 +275,27 @@ def rmcmc(
         print(f"Resetting chains from checkpoint {reset_from}...")
 
         checkpoint = load_checkpoint(reset_from)
-        n_subjects = data['static'][0]  # Number of subjects from data
-        K = mcmc_config.get('NUM_SUPERCHAINS', mcmc_config['NUM_CHAINS'])
-        M = mcmc_config['NUM_CHAINS'] // K
+        n_subjects = runtime_ctx['data']['static'][0]  # Number of subjects from data
+        K = user_config.get('num_superchains', user_config['num_chains'])
+        M = user_config['num_chains'] // K
 
         print(f"  Source iteration: {checkpoint['iteration']}")
         print(f"  Generating {K} reset starting points (noise_scale={reset_noise_scale})")
 
         initial_vector_np = generate_reset_vector(
             checkpoint,
-            model_type=mcmc_config['POSTERIOR_ID'],
+            model_type=posterior_id,
             n_subjects=n_subjects,
             K=K,
             M=M,
             noise_scale=reset_noise_scale,
-            rng_seed=mcmc_config.get('rng_seed', None)
+            rng_seed=user_config.get('rng_seed', None)
         )
 
-        initial_carry, mcmc_config = initialize_mcmc_system(
+        initial_carry, user_config = initialize_mcmc_system(
             initial_vector_np,
-            mcmc_config,
+            user_config,
+            runtime_ctx,
             num_gq=run_params.NUM_GQ,
             num_collect=run_params.NUM_COLLECT,
             num_blocks=block_arrays.num_blocks
@@ -301,27 +306,28 @@ def rmcmc(
 
     else:
         print("Generating initial vector...", flush=True)
-        initial_vector_np = model_ctx['initial_vector_fn'](mcmc_config)
+        initial_vector_np = model_ctx['initial_vector_fn'](user_config)
 
-        initial_carry, mcmc_config = initialize_mcmc_system(
+        initial_carry, user_config = initialize_mcmc_system(
             initial_vector_np,
-            mcmc_config,
+            user_config,
+            runtime_ctx,
             num_gq=run_params.NUM_GQ,
             num_collect=run_params.NUM_COLLECT,
             num_blocks=block_arrays.num_blocks
         )
 
     print(f"JAX backend: {jax.default_backend()}")
-    print(f"Likelihood Saving: {'ENABLED' if mcmc_config['SAVE_LIKELIHOODS'] else 'DISABLED'}")
+    print(f"Likelihood Saving: {'ENABLED' if user_config['save_likelihoods'] else 'DISABLED'}")
 
     # Compile MCMC kernel
     compiled_chunk, compile_time = compile_mcmc_kernel(
-        mcmc_config, data, block_arrays, run_params, initial_carry
+        user_config, runtime_ctx, block_arrays, run_params, initial_carry
     )
 
     # --- BENCHMARKING ---
     # Check for cached benchmark first, then run if needed
-    benchmark_iters = mcmc_config.get('BENCHMARK', 0)
+    benchmark_iters = user_config.get('benchmark', 0)
     avg_time = None
 
     if cached_benchmark is not None:
@@ -336,21 +342,21 @@ def rmcmc(
                 print(f"  Cached from: {cached_git.get('branch', '?')}@{cached_git.get('commit', '?')}")
     elif benchmark_iters > 0:
         # Run benchmark and save results
-        results = benchmark_mcmc_sampler(compiled_chunk, initial_carry, benchmark_iters)
-        avg_time = results['avg_time']
+        bench_results = benchmark_mcmc_sampler(compiled_chunk, initial_carry, benchmark_iters)
+        avg_time = bench_results['avg_time']
 
         # Save benchmark for future use
         benchmark_mgr.save_benchmark(
             posterior_hash=posterior_hash,
             posterior_id=posterior_id,
-            num_chains=mcmc_config['NUM_CHAINS'],
+            num_chains=user_config['num_chains'],
             fresh_compile_time=compile_time,
             iteration_time=avg_time,
             benchmark_iterations=benchmark_iters,
         )
         print(f"  Benchmark saved (hash: {posterior_hash[:8]}...)")
 
-    total_iterations_to_run = run_params.BURN_ITER + mcmc_config["NUM_ITERATIONS"]
+    total_iterations_to_run = run_params.BURN_ITER + user_config["num_iterations"]
     host_history = None
     host_lik_history = None
     end_run_time = 0.0
@@ -380,7 +386,7 @@ def rmcmc(
         final_acceptance_counts = current_carry[6]
 
         total_iterations = current_carry[7]
-        num_chains = mcmc_config["NUM_CHAINS"]
+        num_chains = user_config["num_chains"]
 
         total_attempts_per_block = total_iterations * num_chains
         acceptance_rates = final_acceptance_counts / total_attempts_per_block
@@ -400,8 +406,8 @@ def rmcmc(
             print("\n--- Computing Unified Nested R-hat (GPU) ---")
             rhat_start = time.perf_counter()
 
-            K = mcmc_config['NUM_SUPERCHAINS']
-            M = mcmc_config['SUBCHAINS_PER_SUPER']
+            K = user_config['num_superchains']
+            M = user_config['subchains_per_super']
 
             # Use unified function for both Nested and Standard cases
             nrhat_device = compute_nested_rhat(final_history_device, K, M)
@@ -433,7 +439,7 @@ def rmcmc(
         print("Transferring history to Host...", flush=True)
         host_history = jax.device_get(final_history_device)
 
-        if mcmc_config['SAVE_LIKELIHOODS']:
+        if user_config['save_likelihoods']:
             print("Transferring likelihood history to Host...", flush=True)
             host_lik_history = jax.device_get(final_lik_device)
 
@@ -442,7 +448,7 @@ def rmcmc(
     else:
         print("\nSkipping main run.", flush=True)
         host_history = jax.device_get(initial_carry[4])
-        if mcmc_config['SAVE_LIKELIHOODS']:
+        if user_config['save_likelihoods']:
              host_lik_history = jax.device_get(initial_carry[5])
         nrhat_values = None
         current_carry = initial_carry
@@ -451,8 +457,8 @@ def rmcmc(
     # Unified diagnostics return
     diagnostics = {
         'rhat': nrhat_values,        # Primary metric (Nested or Standard)
-        'K': mcmc_config['NUM_SUPERCHAINS'],
-        'M': mcmc_config['SUBCHAINS_PER_SUPER'],
+        'K': user_config['num_superchains'],
+        'M': user_config['subchains_per_super'],
         # Timing info for benchmarking
         'compile_time': compile_time,
         'wall_time': end_run_time - start_run_time if total_iterations_to_run > 0 else 0.0,
@@ -462,7 +468,7 @@ def rmcmc(
 
     # --- 4. POST-RUN DIAGNOSTICS ---
     print("\n--- Post-Run Diagnostics ---")
-    diagnostics = diagnose_sampler_issues(host_history, mcmc_config, diagnostics)
+    diagnostics = diagnose_sampler_issues(host_history, user_config, diagnostics)
     print_diagnostics(diagnostics)
 
     if diagnostics['issues']:
@@ -471,19 +477,42 @@ def rmcmc(
 
     # Build checkpoint from final carry
     final_carry = current_carry if total_iterations_to_run > 0 else initial_carry
+    final_iteration = int(jax.device_get(final_carry[7]))
+
     final_checkpoint = {
         'states_A': np.asarray(jax.device_get(final_carry[0])),
         'states_B': np.asarray(jax.device_get(final_carry[2])),
         'keys_A': np.asarray(jax.device_get(final_carry[1])),
         'keys_B': np.asarray(jax.device_get(final_carry[3])),
-        'iteration': int(jax.device_get(final_carry[7])),
+        'iteration': final_iteration,
         'acceptance_counts': np.asarray(jax.device_get(final_carry[6])),
-        'posterior_id': mcmc_config['POSTERIOR_ID'],
-        'num_params': mcmc_config['num_params'],
-        'num_chains_a': mcmc_config['NUM_CHAINS_A'],
-        'num_chains_b': mcmc_config['NUM_CHAINS_B'],
-        'num_superchains': mcmc_config.get('NUM_SUPERCHAINS', 0),
-        'subchains_per_super': mcmc_config.get('SUBCHAINS_PER_SUPER', 0),
+        'posterior_id': posterior_id,
+        'num_params': user_config['num_params'],
+        'num_chains_a': user_config['num_chains_a'],
+        'num_chains_b': user_config['num_chains_b'],
+        'num_superchains': user_config.get('num_superchains', 0),
+        'subchains_per_super': user_config.get('subchains_per_super', 0),
     }
 
-    return host_history, diagnostics, mcmc_config, host_lik_history, final_checkpoint
+    # Compute iteration numbers for each sample
+    thin = user_config['thin_iteration']
+    num_samples = host_history.shape[0] if host_history is not None else 0
+    if num_samples > 0:
+        start_iter = final_iteration - num_samples * thin
+        iterations = start_iter + (np.arange(num_samples) + 1) * thin - 1
+    else:
+        iterations = np.array([], dtype=np.int64)
+
+    # Build results dict with clean serializable config
+    results = {
+        'history': host_history,
+        'iterations': iterations,
+        'diagnostics': diagnostics,
+        'mcmc_config': user_config,  # Clean, no JAX types
+        'likelihoods': host_lik_history,
+        'K': user_config['num_superchains'],
+        'M': user_config['subchains_per_super'],
+        'thin_iteration': thin,
+    }
+
+    return results, final_checkpoint
