@@ -451,6 +451,117 @@ class PosteriorBenchmarkManager:
             print(f"  Timestamp: {benchmark.get('timestamp', '?')}")
 
 
+    def compare_benchmark(self,
+                          posterior_hash: str,
+                          new_iteration_time: float,
+                          new_compile_time: float,
+                          posterior_id: str = None) -> Dict[str, Any]:
+        """
+        Compare a new benchmark against cached results.
+
+        Args:
+            posterior_hash: Hash identifying the posterior configuration
+            new_iteration_time: New iteration time in seconds
+            new_compile_time: New compile time in seconds
+            posterior_id: Optional posterior ID for display
+
+        Returns:
+            Dict with comparison results including deltas and percentages
+        """
+        cached = self.load_benchmark(posterior_hash)
+
+        comparison = {
+            'has_cached': cached is not None,
+            'new_iteration_time': new_iteration_time,
+            'new_compile_time': new_compile_time,
+            'cached_iteration_time': None,
+            'cached_compile_time': None,
+            'iteration_delta': None,
+            'iteration_pct_change': None,
+            'compile_delta': None,
+            'compile_pct_change': None,
+            'cached_git': None,
+            'current_git': get_git_info(),
+        }
+
+        if cached:
+            cached_results = cached.get('results', {})
+            cached_iter = cached_results.get('iteration_time_s')
+            cached_compile = cached_results.get('fresh_compile_time_s')
+
+            comparison['cached_iteration_time'] = cached_iter
+            comparison['cached_compile_time'] = cached_compile
+            comparison['cached_git'] = cached.get('git', {})
+
+            if cached_iter:
+                delta = new_iteration_time - cached_iter
+                pct = (delta / cached_iter) * 100
+                comparison['iteration_delta'] = delta
+                comparison['iteration_pct_change'] = pct
+
+            if cached_compile:
+                delta = new_compile_time - cached_compile
+                pct = (delta / cached_compile) * 100
+                comparison['compile_delta'] = delta
+                comparison['compile_pct_change'] = pct
+
+        return comparison
+
+    def print_comparison(self, comparison: Dict[str, Any], posterior_id: str = None):
+        """Print a human-readable benchmark comparison."""
+        print("\n" + "=" * 60)
+        print("BENCHMARK COMPARISON")
+        print("=" * 60)
+
+        if posterior_id:
+            print(f"Posterior: {posterior_id}")
+
+        current_git = comparison.get('current_git', {})
+        cached_git = comparison.get('cached_git', {})
+
+        if current_git:
+            print(f"Current:  {current_git.get('branch', '?')}@{current_git.get('commit', '?')}")
+        if cached_git:
+            print(f"Cached:   {cached_git.get('branch', '?')}@{cached_git.get('commit', '?')}")
+
+        print("-" * 60)
+
+        # Iteration time comparison
+        new_iter = comparison['new_iteration_time']
+        cached_iter = comparison['cached_iteration_time']
+
+        print(f"Iteration Time:")
+        print(f"  New:    {new_iter:.6f} s")
+        if cached_iter:
+            print(f"  Cached: {cached_iter:.6f} s")
+            delta = comparison['iteration_delta']
+            pct = comparison['iteration_pct_change']
+            sign = "+" if delta > 0 else ""
+            status = "SLOWER" if delta > 0 else "FASTER" if delta < 0 else "SAME"
+            color_status = f"({status})"
+            print(f"  Delta:  {sign}{delta:.6f} s ({sign}{pct:.1f}%) {color_status}")
+        else:
+            print(f"  Cached: (no previous benchmark)")
+
+        # Compile time comparison
+        new_compile = comparison['new_compile_time']
+        cached_compile = comparison['cached_compile_time']
+
+        print(f"\nCompile Time:")
+        print(f"  New:    {new_compile:.4f} s")
+        if cached_compile:
+            print(f"  Cached: {cached_compile:.4f} s")
+            delta = comparison['compile_delta']
+            pct = comparison['compile_pct_change']
+            sign = "+" if delta > 0 else ""
+            status = "SLOWER" if delta > 0 else "FASTER" if delta < 0 else "SAME"
+            print(f"  Delta:  {sign}{delta:.4f} s ({sign}{pct:.1f}%) ({status})")
+        else:
+            print(f"  Cached: (no previous benchmark)")
+
+        print("=" * 60)
+
+
 def get_manager(cache_dir: Optional[str] = None) -> PosteriorBenchmarkManager:
     """
     Get a benchmark manager for the specified or default directory.
