@@ -56,6 +56,7 @@ from .posterior_benchmark import (
 # Re-export for backward compatibility
 __all__ = [
     'rmcmc',
+    'run_benchmark',
     'BlockArrays',
     'RunParams',
     'build_block_arrays',
@@ -64,6 +65,118 @@ __all__ = [
     'validate_mcmc_inputs',
     'compute_nested_rhat',
 ]
+
+
+def run_benchmark(
+    mcmc_config: Dict[str, Any],
+    data: Dict[str, Any],
+    benchmark_iterations: int = 100,
+    compare: bool = True,
+    update_cache: bool = False,
+) -> Dict[str, Any]:
+    """
+    Run benchmark on a posterior model and optionally compare against cached results.
+
+    This is a lightweight alternative to rmcmc() for performance testing only.
+    No samples are collected or saved.
+
+    Args:
+        mcmc_config: MCMC configuration dict (needs POSTERIOR_ID, chain config, etc.)
+        data: Data dict with 'static', 'int', 'float' arrays
+        benchmark_iterations: Number of iterations for timing (default 100)
+        compare: If True, compare against cached benchmark and print results
+        update_cache: If True, save new benchmark as the cached baseline
+
+    Returns:
+        Dict with benchmark results:
+            - iteration_time: Average time per iteration (seconds)
+            - compile_time: Time to compile kernel (seconds)
+            - posterior_hash: Hash identifying the posterior configuration
+            - comparison: Comparison dict if compare=True, else None
+    """
+    import jax
+
+    # Ensure benchmark-only settings
+    mcmc_config = mcmc_config.copy()
+    mcmc_config['NUM_COLLECT'] = 0
+    mcmc_config['BURN_ITER'] = 0
+    mcmc_config['SAVE_LIKELIHOODS'] = False
+    mcmc_config.setdefault('THIN_ITERATION', 1)
+
+    # Configure system
+    print("Configuring MCMC system...")
+    mcmc_config, data, model_ctx = configure_mcmc_system(mcmc_config, data)
+    mcmc_config = gen_rng_keys(mcmc_config)
+
+    run_params = model_ctx['run_params']
+    block_arrays = model_ctx['block_arrays']
+
+    # Compute posterior hash
+    posterior_id = mcmc_config['POSTERIOR_ID']
+    posterior_hash = get_posterior_hash(
+        posterior_id,
+        model_ctx['model_config'],
+        data
+    )
+    print(f"Posterior hash: {posterior_hash}")
+
+    # Initialize
+    print("Generating initial vector...")
+    initial_vector_np = model_ctx['initial_vector_fn'](mcmc_config)
+
+    initial_carry, mcmc_config = initialize_mcmc_system(
+        initial_vector_np,
+        mcmc_config,
+        num_gq=run_params.NUM_GQ,
+        num_collect=run_params.NUM_COLLECT,
+        num_blocks=block_arrays.num_blocks
+    )
+
+    print(f"JAX backend: {jax.default_backend()}")
+
+    # Compile kernel
+    compiled_chunk, compile_time = compile_mcmc_kernel(
+        mcmc_config, data, block_arrays, run_params, initial_carry
+    )
+
+    # Run benchmark
+    results = benchmark_mcmc_sampler(compiled_chunk, initial_carry, benchmark_iterations)
+    iteration_time = results['avg_time']
+
+    # Compare and optionally update cache
+    benchmark_mgr = get_benchmark_manager()
+    comparison = None
+
+    if compare:
+        comparison = benchmark_mgr.compare_benchmark(
+            posterior_hash,
+            new_iteration_time=iteration_time,
+            new_compile_time=compile_time,
+            posterior_id=posterior_id
+        )
+        benchmark_mgr.print_comparison(comparison, posterior_id=posterior_id)
+
+    if update_cache:
+        print("\nUpdating cached benchmark...")
+        benchmark_mgr.save_benchmark(
+            posterior_hash=posterior_hash,
+            posterior_id=posterior_id,
+            num_chains=mcmc_config['NUM_CHAINS'],
+            fresh_compile_time=compile_time,
+            iteration_time=iteration_time,
+            benchmark_iterations=benchmark_iterations,
+        )
+        print(f"Benchmark saved (hash: {posterior_hash[:8]}...)")
+    elif compare:
+        print("\n(Use update_cache=True to save these results as the new baseline)")
+
+    return {
+        'iteration_time': iteration_time,
+        'compile_time': compile_time,
+        'posterior_hash': posterior_hash,
+        'comparison': comparison,
+        'mcmc_config': mcmc_config,
+    }
 
 
 def rmcmc(

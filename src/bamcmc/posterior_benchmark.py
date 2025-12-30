@@ -559,7 +559,43 @@ class PosteriorBenchmarkManager:
         else:
             print(f"  Cached: (no previous benchmark)")
 
+        # Total time predictions for practical iteration counts
+        print("-" * 60)
+        print("Total Time Predictions (compile + iterations):")
+        print(f"{'Iterations':<12} {'New':>12} {'Cached':>12} {'Delta':>12} {'Status':>10}")
+        print("-" * 60)
+
+        for n_iters in [1000, 5000, 10000]:
+            new_total = new_compile + (new_iter * n_iters)
+
+            if cached_iter and cached_compile:
+                cached_total = cached_compile + (cached_iter * n_iters)
+                delta = new_total - cached_total
+                pct = (delta / cached_total) * 100
+                sign = "+" if delta > 0 else ""
+                status = "SLOWER" if delta > 0 else "FASTER" if delta < 0 else "SAME"
+
+                print(f"{n_iters:<12} {self._format_time(new_total):>12} "
+                      f"{self._format_time(cached_total):>12} "
+                      f"{sign}{pct:>+5.1f}%      {status:>10}")
+            else:
+                print(f"{n_iters:<12} {self._format_time(new_total):>12} "
+                      f"{'N/A':>12} {'N/A':>12} {'N/A':>10}")
+
         print("=" * 60)
+
+    def _format_time(self, seconds: float) -> str:
+        """Format seconds as human-readable time string."""
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        elif seconds < 3600:
+            mins = int(seconds // 60)
+            secs = seconds % 60
+            return f"{mins}m {secs:.0f}s"
+        else:
+            hours = int(seconds // 3600)
+            mins = int((seconds % 3600) // 60)
+            return f"{hours}h {mins}m"
 
 
 def get_manager(cache_dir: Optional[str] = None) -> PosteriorBenchmarkManager:
