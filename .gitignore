@@ -5,3 +5,4 @@ __pycache__/
 dist/
 build/
 .eggs/
+posterior_benchmarks
