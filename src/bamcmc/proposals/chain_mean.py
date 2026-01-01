@@ -18,7 +18,7 @@ def chain_mean_proposal(operand):
     where μ and Σ are precomputed from coupled_blocks.
 
     Args:
-        operand: Tuple of (key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings)
+        operand: Tuple of (key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn)
             key: JAX random key
             current_block: Current parameter values (block_size,)
             step_mean: Precomputed mean (block_size,)
@@ -26,13 +26,15 @@ def chain_mean_proposal(operand):
             coupled_blocks: Raw states (unused for continuous proposals)
             block_mask: Mask for valid parameters
             settings: JAX array of settings (unused by this proposal)
+            grad_fn: Gradient function (unused by chain-mean)
 
     Returns:
         proposal: Proposed parameter values
         log_hastings_ratio: Log density ratio for MH acceptance
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings = operand
+    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn = operand
+    del grad_fn  # Unused by this proposal
     new_key, proposal_key = random.split(key)
 
     L = jnp.linalg.cholesky(step_cov)

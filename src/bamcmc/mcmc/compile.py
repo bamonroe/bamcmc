@@ -108,12 +108,21 @@ def _run_mcmc_chunk(carry, data_int, data_float, data_static, block_arrays,
     direct_sampler_fn = model_config['direct_sampler']
     gq_fn = model_config.get('generated_quantities')
 
+    # Bind data to log_post_fn
+    log_post_fn_bound = partial(log_post_fn, data=data)
+
+    # Create gradient function for MALA proposals
+    # jax.grad creates the derivative function (no computation yet)
+    # Gradient is w.r.t. first argument (chain_state)
+    grad_log_post_fn = jax.grad(log_post_fn_bound, argnums=0)
+
     # Create scan body with data bound inside trace
     # Using partial inside the traced function makes the data binding
     # part of the trace, not a closure
     scan_body = partial(
         mcmc_scan_body_offload,
-        log_post_fn=partial(log_post_fn, data=data),
+        log_post_fn=log_post_fn_bound,
+        grad_log_post_fn=grad_log_post_fn,
         direct_sampler_fn=partial(direct_sampler_fn, data=data),
         gq_fn=partial(gq_fn, data=data) if gq_fn else None,
         block_arrays=block_arrays,

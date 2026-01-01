@@ -17,7 +17,7 @@ from bamcmc.batch_specs import BlockSpec, SamplerType, ProposalType
 from bamcmc.settings import SettingSlot, build_settings_matrix
 from bamcmc.error_handling import validate_mcmc_config
 
-from .conftest import make_settings_array
+from .conftest import make_settings_array, dummy_grad_fn
 
 
 # ============================================================================
@@ -315,7 +315,7 @@ class TestMixtureProposal:
         block_mask = jnp.array([1.0, 1.0])
 
         operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                   make_settings_array(chain_prob=0.5))
+                   make_settings_array(chain_prob=0.5), dummy_grad_fn)
         proposal, log_ratio, new_key = mixture_proposal(operand)
 
         assert proposal.shape == (2,)
@@ -333,7 +333,7 @@ class TestMixtureProposal:
         for i in range(100):
             key = jax.random.PRNGKey(i)
             operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                       make_settings_array(chain_prob=0.0))
+                       make_settings_array(chain_prob=0.0), dummy_grad_fn)
             prop, _, _ = mixture_proposal(operand)
             proposals.append(prop)
 
@@ -354,7 +354,7 @@ class TestMixtureProposal:
         for i in range(100):
             key = jax.random.PRNGKey(i)
             operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                       make_settings_array(chain_prob=1.0))
+                       make_settings_array(chain_prob=1.0), dummy_grad_fn)
             prop, _, _ = mixture_proposal(operand)
             proposals.append(prop)
 
@@ -372,7 +372,7 @@ class TestMixtureProposal:
         block_mask = jnp.array([1.0, 1.0])
 
         operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                   make_settings_array(chain_prob=0.5))
+                   make_settings_array(chain_prob=0.5), dummy_grad_fn)
         _, log_ratio, _ = mixture_proposal(operand)
 
         assert jnp.isfinite(log_ratio)
@@ -405,7 +405,7 @@ class TestMultinomialProposal:
         step_mean, step_cov = self._make_dummy_stats(2)
 
         operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                   make_settings_array(uniform_weight=0.05, n_categories=10))
+                   make_settings_array(uniform_weight=0.05, n_categories=10), dummy_grad_fn)
         proposal, log_ratio, new_key = multinomial_proposal(operand)
 
         assert proposal.shape == (2,)
@@ -426,7 +426,7 @@ class TestMultinomialProposal:
         for i in range(200):
             key = jax.random.PRNGKey(i)
             operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                       make_settings_array(uniform_weight=0.01, n_categories=10))
+                       make_settings_array(uniform_weight=0.01, n_categories=10), dummy_grad_fn)
             prop, _, _ = multinomial_proposal(operand)
             proposals.append(float(prop[0]))
 
@@ -445,7 +445,7 @@ class TestMultinomialProposal:
         step_mean, step_cov = self._make_dummy_stats(1)
 
         operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                   make_settings_array(uniform_weight=0.05, n_categories=5))
+                   make_settings_array(uniform_weight=0.05, n_categories=5), dummy_grad_fn)
         _, log_ratio, _ = multinomial_proposal(operand)
 
         assert jnp.isfinite(log_ratio)

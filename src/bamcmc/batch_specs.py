@@ -30,15 +30,14 @@ class SamplerType(IntEnum):
     # Core samplers (currently implemented)
     METROPOLIS_HASTINGS = 0  # Standard MH with proposal distribution
     DIRECT_CONJUGATE = 1     # Direct sampling from conditional (e.g., Gibbs)
-    MALA = 2                 # Metropolis-Adjusted Langevin Algorithm (gradient-based)
 
     # Future samplers (reserved for implementation)
-    ADAPTIVE_MH = 3          # MH with adaptive covariance tuning
-    HMC = 4                  # Hamiltonian Monte Carlo
-    NUTS = 5                 # No-U-Turn Sampler
-    ELLIPTICAL_SLICE = 6     # For Gaussian priors
-    SLICE_SAMPLER = 7        # Slice sampling
-    DELAYED_ACCEPTANCE = 8   # Two-stage MH for expensive likelihoods
+    ADAPTIVE_MH = 2          # MH with adaptive covariance tuning
+    HMC = 3                  # Hamiltonian Monte Carlo
+    NUTS = 4                 # No-U-Turn Sampler
+    ELLIPTICAL_SLICE = 5     # For Gaussian priors
+    SLICE_SAMPLER = 6        # Slice sampling
+    DELAYED_ACCEPTANCE = 7   # Two-stage MH for expensive likelihoods
 
     def __str__(self):
         return self.name.replace('_', ' ').title()
@@ -65,11 +64,11 @@ class ProposalType(IntEnum):
     CHAIN_MEAN = 1     # Independent: center proposal on population mean
     MIXTURE = 2        # Mixture: with prob alpha use CHAIN_MEAN, else SELF_MEAN
     MULTINOMIAL = 3    # Discrete: sample from empirical distribution on grid
+    MALA = 4           # Metropolis-adjusted Langevin (gradient-based, preconditioned)
 
     # Future proposals - add new enum values here, implement in proposals.py
-    # ADAPTIVE = 4       # Adaptive covariance during burn-in
-    # PRECONDITIONED = 5 # Use custom preconditioning matrix
-    # LANGEVIN = 6       # Metropolis-adjusted Langevin (gradient-based)
+    # ADAPTIVE = 5       # Adaptive covariance during burn-in
+    # PRECONDITIONED = 6 # Use custom preconditioning matrix
 
     def __str__(self):
         return self.name.replace('_', ' ').title()
@@ -155,7 +154,6 @@ class BlockSpec:
         """Check if this block uses a Metropolis-Hastings sampler."""
         return self.sampler_type in [
             SamplerType.METROPOLIS_HASTINGS,
-            SamplerType.MALA,
             SamplerType.ADAPTIVE_MH,
             SamplerType.HMC,
             SamplerType.NUTS

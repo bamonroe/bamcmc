@@ -22,7 +22,7 @@ def multinomial_proposal(operand):
     then masks out invalid categories based on the actual n_categories setting.
 
     Args:
-        operand: Tuple of (key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings)
+        operand: Tuple of (key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn)
             key: JAX random key
             current_block: Current parameter values (block_size,) - discrete values in [1, n_categories]
             step_mean: Precomputed mean (unused for multinomial)
@@ -32,13 +32,15 @@ def multinomial_proposal(operand):
             settings: JAX array of settings
                 [UNIFORM_WEIGHT] - weight of uniform vs empirical (proposal = w*Uniform + (1-w)*Empirical)
                 [N_CATEGORIES] - number of valid categories (values 1 to n_categories)
+            grad_fn: Gradient function (unused by multinomial - discrete parameters)
 
     Returns:
         proposal: Proposed parameter values (discrete)
         log_hastings_ratio: Log density ratio for MH acceptance
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings = operand
+    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn = operand
+    del grad_fn  # Unused by this proposal (discrete parameters have no gradient)
 
     # Fixed maximum for array shapes - avoids recompilation
     MAX_CATEGORIES = 10

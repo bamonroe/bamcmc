@@ -22,7 +22,7 @@ def mixture_proposal(operand):
     where μ and Σ are precomputed from coupled_blocks.
 
     Args:
-        operand: Tuple of (key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings)
+        operand: Tuple of (key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn)
             key: JAX random key
             current_block: Current parameter values (block_size,)
             step_mean: Precomputed mean (block_size,)
@@ -32,13 +32,15 @@ def mixture_proposal(operand):
             settings: JAX array of settings
                 [CHAIN_PROB] - probability of using chain_mean proposal
                 [COV_MULT] - covariance multiplier for self_mean component (default 1.0)
+            grad_fn: Gradient function (unused by mixture)
 
     Returns:
         proposal: Proposed parameter values
         log_hastings_ratio: Log density ratio for MH acceptance
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings = operand
+    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn = operand
+    del grad_fn  # Unused by this proposal
     chain_prob = settings[SettingSlot.CHAIN_PROB]
     cov_mult = settings[SettingSlot.COV_MULT]
 

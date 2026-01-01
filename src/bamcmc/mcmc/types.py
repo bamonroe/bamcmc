@@ -27,29 +27,36 @@ class BlockArrays:
 
     This is a frozen dataclass for immutability and JAX compatibility.
     Registered as a JAX pytree to enable tracing through JIT.
+
+    Note on proposal_types: These are REMAPPED indices into a compact dispatch
+    table containing only the proposals actually used by this model. This ensures
+    JAX only traces the proposals that are needed, not all available proposals.
+    The used_proposal_types tuple stores the original ProposalType enum values
+    in dispatch order.
     """
     indices: jnp.ndarray         # (n_blocks, max_block_size) - parameter indices per block
     types: jnp.ndarray           # (n_blocks,) - SamplerType for each block
     masks: jnp.ndarray           # (n_blocks, max_block_size) - valid parameter mask
-    proposal_types: jnp.ndarray  # (n_blocks,) - ProposalType for MH blocks
+    proposal_types: jnp.ndarray  # (n_blocks,) - REMAPPED indices into compact dispatch table
     settings_matrix: jnp.ndarray # (n_blocks, MAX_SETTINGS) - per-block settings
     max_size: int                # Maximum block size
     num_blocks: int              # Number of blocks
     total_params: int            # Total parameter count
+    used_proposal_types: tuple   # Original ProposalType values actually used (in dispatch order)
 
 
 def _block_arrays_flatten(ba):
     """Flatten BlockArrays for JAX pytree."""
-    # Arrays are children (traced), scalars are auxiliary data (static)
+    # Arrays are children (traced), scalars/tuples are auxiliary data (static)
     children = (ba.indices, ba.types, ba.masks, ba.proposal_types, ba.settings_matrix)
-    aux_data = (ba.max_size, ba.num_blocks, ba.total_params)
+    aux_data = (ba.max_size, ba.num_blocks, ba.total_params, ba.used_proposal_types)
     return children, aux_data
 
 
 def _block_arrays_unflatten(aux_data, children):
     """Unflatten BlockArrays from JAX pytree."""
     indices, types, masks, proposal_types, settings_matrix = children
-    max_size, num_blocks, total_params = aux_data
+    max_size, num_blocks, total_params, used_proposal_types = aux_data
     return BlockArrays(
         indices=indices,
         types=types,
@@ -58,7 +65,8 @@ def _block_arrays_unflatten(aux_data, children):
         settings_matrix=settings_matrix,
         max_size=max_size,
         num_blocks=num_blocks,
-        total_params=total_params
+        total_params=total_params,
+        used_proposal_types=used_proposal_types,
     )
 
 
@@ -116,13 +124,26 @@ def build_block_arrays(specs: List[BlockSpec], start_idx: int = 0) -> BlockArray
         masks[i, :spec.size] = 1.0
         current_param += spec.size
 
-    # Build proposal info
+    # Collect unique proposal types actually used by MH blocks
+    used_types_set = set()
+    for spec in specs:
+        if spec.is_mh_sampler():
+            used_types_set.add(int(spec.proposal_type))
+
+    # Create sorted list for consistent ordering (becomes the compact dispatch table order)
+    used_types_list = tuple(sorted(used_types_set))
+
+    # Create mapping: original ProposalType value -> compact index
+    type_to_compact = {t: i for i, t in enumerate(used_types_list)}
+
+    # Build remapped proposal_types (indices into compact dispatch table)
     proposal_types = []
     for spec in specs:
         if spec.is_mh_sampler():
-            proposal_types.append(int(spec.proposal_type))
+            original_type = int(spec.proposal_type)
+            proposal_types.append(type_to_compact[original_type])
         else:
-            proposal_types.append(0)
+            proposal_types.append(0)  # Unused for direct samplers
 
     return BlockArrays(
         indices=jnp.array(indices),
@@ -133,4 +154,5 @@ def build_block_arrays(specs: List[BlockSpec], start_idx: int = 0) -> BlockArray
         max_size=max_size,
         num_blocks=num_blocks,
         total_params=current_param,
+        used_proposal_types=used_types_list,
     )
