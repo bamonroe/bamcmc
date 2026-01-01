@@ -13,8 +13,8 @@ import numpy as np
 from dataclasses import dataclass
 from typing import List
 
-from .batch_specs import BlockSpec
-from .settings import build_settings_matrix
+from ..batch_specs import BlockSpec
+from ..settings import build_settings_matrix
 
 
 @dataclass(frozen=True)

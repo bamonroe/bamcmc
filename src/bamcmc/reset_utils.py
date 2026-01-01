@@ -14,7 +14,7 @@ Usage:
         checkpoint,
         model_type='mixture_3model_bhm',
         n_subjects=250,
-        noise_scale=0.1,
+        noise_scale=1.0,  # Use full posterior spread (default)
         rng_seed=42
     )
 """
@@ -153,13 +153,13 @@ def get_special_param_indices(model_type, n_subjects):
         }
 
 
-def generate_reset_states(checkpoint, model_type, n_subjects, K, noise_scale=0.1, rng_seed=None):
+def generate_reset_states(checkpoint, model_type, n_subjects, K, noise_scale=1.0, rng_seed=None):
     """
-    Generate K new starting states based on cross-chain mean.
+    Generate K new starting states based on cross-chain mean and std.
 
     This creates K distinct starting points (one per superchain) by:
-    1. Computing cross-chain mean for all parameters
-    2. Adding scaled noise: new_val = mean + N(0, noise_scale * std)
+    1. Computing cross-chain mean and std for all parameters
+    2. Sampling from the empirical distribution: new_val = mean + N(0, noise_scale * std)
     3. Special handling for discrete (z) and simplex (pi) parameters
 
     Args:
@@ -167,7 +167,7 @@ def generate_reset_states(checkpoint, model_type, n_subjects, K, noise_scale=0.1
         model_type: Model identifier (e.g., 'mixture_3model_bhm')
         n_subjects: Number of subjects in the model
         K: Number of superchains (distinct starting points to generate)
-        noise_scale: Scale factor for noise (default 0.1)
+        noise_scale: Scale factor for noise (default 1.0 to preserve full posterior spread)
         rng_seed: Random seed for reproducibility
 
     Returns:
@@ -230,7 +230,7 @@ def generate_reset_states(checkpoint, model_type, n_subjects, K, noise_scale=0.1
     return new_states
 
 
-def generate_reset_vector(checkpoint, model_type, n_subjects, K, M, noise_scale=0.1, rng_seed=None):
+def generate_reset_vector(checkpoint, model_type, n_subjects, K, M, noise_scale=1.0, rng_seed=None):
     """
     Generate full initial vector with K superchains replicated M times.
 
@@ -243,7 +243,7 @@ def generate_reset_vector(checkpoint, model_type, n_subjects, K, M, noise_scale=
         n_subjects: Number of subjects
         K: Number of superchains
         M: Number of subchains per superchain
-        noise_scale: Scale for noise added to mean
+        noise_scale: Scale for noise added to mean (default 1.0 for full posterior spread)
         rng_seed: Random seed
 
     Returns:
@@ -267,7 +267,7 @@ def generate_reset_vector(checkpoint, model_type, n_subjects, K, M, noise_scale=
 
 
 def reset_from_checkpoint(checkpoint_path, model_type, n_subjects, K, M,
-                          noise_scale=0.1, rng_seed=None):
+                          noise_scale=1.0, rng_seed=None):
     """
     High-level function to generate reset initial vector from checkpoint.
 

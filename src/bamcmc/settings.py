@@ -27,18 +27,23 @@ class SettingSlot(IntEnum):
     These map setting names to positions in the settings array.
     IntEnum values compile to simple integers - no runtime overhead.
     """
-    ALPHA = 0           # Mixture weight for proposals (0-1)
+    CHAIN_PROB = 0      # Probability of using chain_mean in mixture proposal (0-1)
     N_CATEGORIES = 1    # Number of categories for MULTINOMIAL proposal
+    COV_MULT = 2        # Covariance multiplier for self_mean proposal
+    UNIFORM_WEIGHT = 3  # Weight of uniform distribution in MULTINOMIAL proposal (0-1)
+    EPSILON = 4         # Step size for MALA sampler
     # Future settings:
-    # STEP_SIZE = 2
-    # BOUNDS_LOW = 3
-    # BOUNDS_HIGH = 4
+    # BOUNDS_LOW = 5
+    # BOUNDS_HIGH = 6
 
 
 # Default values for each setting
 SETTING_DEFAULTS = {
-    SettingSlot.ALPHA: 0.5,
+    SettingSlot.CHAIN_PROB: 0.5,
     SettingSlot.N_CATEGORIES: 4.0,  # Stored as float for JAX compatibility
+    SettingSlot.COV_MULT: 1.0,      # No scaling by default
+    SettingSlot.UNIFORM_WEIGHT: 0.4,  # Mix of uniform and empirical for multinomial
+    SettingSlot.EPSILON: 0.1,       # MALA step size (tune for ~57% acceptance)
 }
 
 # Total number of settings (determines matrix width)
@@ -64,8 +69,11 @@ def build_settings_matrix(specs):
 
     # Map string keys to slots
     key_to_slot = {
-        'alpha': SettingSlot.ALPHA,
+        'chain_prob': SettingSlot.CHAIN_PROB,
         'n_categories': SettingSlot.N_CATEGORIES,
+        'cov_mult': SettingSlot.COV_MULT,
+        'uniform_weight': SettingSlot.UNIFORM_WEIGHT,
+        'epsilon': SettingSlot.EPSILON,
     }
 
     # Fill in specified values

@@ -30,7 +30,7 @@ def multinomial_proposal(operand):
             coupled_blocks: States from opposite group (n_chains, block_size)
             block_mask: Mask for valid parameters
             settings: JAX array of settings
-                [ALPHA] - weight of uniform vs empirical (proposal = alpha*Uniform + (1-alpha)*Empirical)
+                [UNIFORM_WEIGHT] - weight of uniform vs empirical (proposal = w*Uniform + (1-w)*Empirical)
                 [N_CATEGORIES] - number of valid categories (values 1 to n_categories)
 
     Returns:
@@ -45,7 +45,7 @@ def multinomial_proposal(operand):
     GRID_MIN = 1
 
     # Get settings from array
-    alpha = settings[SettingSlot.ALPHA]
+    uniform_weight = settings[SettingSlot.UNIFORM_WEIGHT]
     n_categories = settings[SettingSlot.N_CATEGORIES].astype(jnp.int32)
 
     block_size = current_block.shape[0]
@@ -74,7 +74,7 @@ def multinomial_proposal(operand):
         # Avoid division by zero
         empirical_probs = jnp.where(total > 0, counts / total, uniform_probs)
         # Mix with uniform (both already masked to valid categories)
-        final_probs = alpha * uniform_probs + (1 - alpha) * empirical_probs
+        final_probs = uniform_weight * uniform_probs + (1 - uniform_weight) * empirical_probs
         return final_probs
 
     # Compute probability distributions for each dimension

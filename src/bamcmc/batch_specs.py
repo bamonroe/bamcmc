@@ -30,14 +30,15 @@ class SamplerType(IntEnum):
     # Core samplers (currently implemented)
     METROPOLIS_HASTINGS = 0  # Standard MH with proposal distribution
     DIRECT_CONJUGATE = 1     # Direct sampling from conditional (e.g., Gibbs)
+    MALA = 2                 # Metropolis-Adjusted Langevin Algorithm (gradient-based)
 
     # Future samplers (reserved for implementation)
-    ADAPTIVE_MH = 2          # MH with adaptive covariance tuning
-    HMC = 3                  # Hamiltonian Monte Carlo
-    NUTS = 4                 # No-U-Turn Sampler
-    ELLIPTICAL_SLICE = 5     # For Gaussian priors
-    SLICE_SAMPLER = 6        # Slice sampling
-    DELAYED_ACCEPTANCE = 7   # Two-stage MH for expensive likelihoods
+    ADAPTIVE_MH = 3          # MH with adaptive covariance tuning
+    HMC = 4                  # Hamiltonian Monte Carlo
+    NUTS = 5                 # No-U-Turn Sampler
+    ELLIPTICAL_SLICE = 6     # For Gaussian priors
+    SLICE_SAMPLER = 7        # Slice sampling
+    DELAYED_ACCEPTANCE = 8   # Two-stage MH for expensive likelihoods
 
     def __str__(self):
         return self.name.replace('_', ' ').title()
@@ -154,6 +155,7 @@ class BlockSpec:
         """Check if this block uses a Metropolis-Hastings sampler."""
         return self.sampler_type in [
             SamplerType.METROPOLIS_HASTINGS,
+            SamplerType.MALA,
             SamplerType.ADAPTIVE_MH,
             SamplerType.HMC,
             SamplerType.NUTS

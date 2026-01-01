@@ -45,8 +45,8 @@ Example:
 # CRITICAL: Import jax_config FIRST to set environment variables before JAX loads
 from . import jax_config  # noqa: F401
 
-# Import mcmc_backend to register BlockArrays pytree
-from . import mcmc_backend as _mcmc_backend  # noqa: F401
+# Import mcmc subpackage to register BlockArrays pytree
+from . import mcmc as _mcmc  # noqa: F401
 
 from .registry import register_posterior, get_posterior, list_posteriors
 from .batch_specs import BlockSpec, SamplerType, ProposalType, create_subject_blocks
@@ -57,6 +57,8 @@ from .checkpoint_helpers import (
     combine_batch_histories,
     apply_burnin,
     compute_rhat_from_history,
+    scan_checkpoints,
+    get_latest_checkpoint,
 )
 from .reset_utils import (
     generate_reset_states,
@@ -68,4 +70,11 @@ from .posterior_benchmark import (
     PosteriorBenchmarkManager,
     get_manager as get_benchmark_manager,
     compute_posterior_hash,
+    run_benchmark,
+)
+
+# Main MCMC entry points
+from .mcmc import (
+    rmcmc,
+    rmcmc_single,
 )

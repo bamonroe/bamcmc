@@ -20,10 +20,35 @@ import jax.random as random
 from functools import partial
 from typing import List, Dict, Tuple, Any
 
-from .registry import get_posterior
-from .mcmc_utils import clean_config
-from .batch_specs import BlockSpec, validate_block_specs
-from .mcmc_types import BlockArrays, RunParams, build_block_arrays
+from ..registry import get_posterior
+from .utils import clean_config
+from ..batch_specs import BlockSpec, validate_block_specs, ProposalType
+from .types import BlockArrays, RunParams, build_block_arrays
+
+
+def get_discrete_param_indices(block_specs: List[BlockSpec]) -> List[int]:
+    """
+    Extract parameter indices that correspond to discrete (multinomial) blocks.
+
+    These parameters should be excluded from R-hat calculations since they
+    have different convergence behavior than continuous parameters.
+
+    Args:
+        block_specs: List of BlockSpec objects
+
+    Returns:
+        List of parameter indices for discrete parameters
+    """
+    discrete_indices = []
+    param_offset = 0
+
+    for spec in block_specs:
+        if spec.proposal_type == ProposalType.MULTINOMIAL:
+            # Add all param indices for this block
+            discrete_indices.extend(range(param_offset, param_offset + spec.size))
+        param_offset += spec.size
+
+    return discrete_indices
 
 
 def gen_rng_keys(rng_seed: int) -> Tuple[Any, Any]:
@@ -184,6 +209,12 @@ def configure_mcmc_system(
     # Build unified BlockArrays structure
     block_arrays = build_block_arrays(raw_batch_specs)
 
+    # Identify discrete parameters (excluded from R-hat calculations)
+    discrete_param_indices = get_discrete_param_indices(raw_batch_specs)
+    user_config['discrete_param_indices'] = discrete_param_indices
+    if discrete_param_indices:
+        print(f"Discrete parameters: {len(discrete_param_indices)} (excluded from R-hat)")
+
     # Create RunParams as frozen dataclass for JAX static argument compatibility
     run_params = RunParams(
         BURN_ITER=burn_iter,
@@ -278,7 +309,7 @@ def initialize_mcmc_system(
     initial_keys_A, initial_keys_B = jnp.split(all_keys_for_each_chain, [num_chains_a], axis=0)
 
     total_cols = num_params + num_gq
-    initial_history = jnp.empty((num_collect, num_chains, total_cols), dtype=jnp_float_dtype)
+    initial_history = jnp.zeros((num_collect, num_chains, total_cols), dtype=jnp_float_dtype)
 
     if user_config['save_likelihoods']:
         # 2D array (Iter, Chain) - Summed over blocks

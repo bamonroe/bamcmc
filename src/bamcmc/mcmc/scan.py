@@ -11,8 +11,8 @@ import jax
 import jax.numpy as jnp
 from typing import Tuple
 
-from .mcmc_types import BlockArrays, RunParams
-from .mcmc_sampling import parallel_gibbs_iteration
+from .types import BlockArrays, RunParams
+from .sampling import parallel_gibbs_iteration
 
 
 # Regularization constant for covariance matrices

@@ -83,21 +83,6 @@ def diagnose_sampler_issues(history, mcmc_config, diagnostics):
             f"{stuck_chains} chain(s) appear stuck (near-zero variance)"
         )
 
-    # Check for multimodality (looking at chain means)
-    if history.shape[1] > 1:  # Multiple chains
-        chain_means = np.mean(history, axis=0)
-        param_stds = np.std(chain_means, axis=0)
-        within_chain_stds = np.mean(np.std(history, axis=0), axis=0)
-
-        # If between-chain variance >> within-chain variance, possible multimodality
-        ratios = param_stds / (within_chain_stds + 1e-10)
-        multimodal_params = np.where(ratios > 3.0)[0]
-
-        if len(multimodal_params) > 0:
-            diagnostics['warnings'].append(
-                f"Possible multimodality detected in parameter(s): {multimodal_params.tolist()}"
-            )
-
     # Summary info
     diagnostics['info'].append(f"Total samples: {history.shape[0] * history.shape[1]}")
     diagnostics['info'].append(f"Number of chains: {history.shape[1]}")

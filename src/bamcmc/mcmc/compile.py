@@ -15,9 +15,9 @@ import time
 from functools import partial
 from typing import Dict, Any, Tuple
 
-from .registry import get_posterior
-from .mcmc_types import BlockArrays, RunParams
-from .mcmc_scan import mcmc_scan_body_offload
+from ..registry import get_posterior
+from .types import BlockArrays, RunParams
+from .scan import mcmc_scan_body_offload
 
 
 # --- CONSTANTS ---
@@ -28,7 +28,7 @@ CHUNK_SIZE = 100
 _COMPILED_KERNEL_CACHE = {}
 
 
-def _compute_cache_key(user_config: Dict[str, Any], data: Dict[str, Any], block_arrays: BlockArrays) -> Tuple:
+def _compute_cache_key(user_config: Dict[str, Any], data: Dict[str, Any], block_arrays: BlockArrays, run_params: RunParams) -> Tuple:
     """
     Compute a cache key for the compiled MCMC kernel.
 
@@ -39,18 +39,26 @@ def _compute_cache_key(user_config: Dict[str, Any], data: Dict[str, Any], block_
     - Number of parameters
     - Block structure
     - Dtype settings
+    - RunParams values (all static args including START_ITERATION)
     """
     # Extract shapes from data tuples
     int_shapes = tuple(arr.shape for arr in data['int'])
     float_shapes = tuple(arr.shape for arr in data['float'])
     static_shape = tuple(data['static']) if 'static' in data else ()
 
+    # Note: START_ITERATION is intentionally excluded from the cache key.
+    # The kernel always uses START_ITERATION=0, and we reset current_iteration
+    # to 0 at the start of each run (including resume). Global iteration tracking
+    # is handled separately via iteration_offset in the carry/checkpoint.
     key = (
         user_config['posterior_id'],
         user_config['num_chains'],
         user_config['use_double'],
-        user_config.get('num_collect', 0),
-        user_config.get('save_likelihoods', False),
+        run_params.NUM_COLLECT,
+        run_params.THIN_ITERATION,
+        run_params.BURN_ITER,
+        run_params.SAVE_LIKELIHOODS,
+        run_params.NUM_GQ,
         block_arrays.num_blocks,
         block_arrays.max_size,
         int_shapes,
@@ -167,7 +175,7 @@ def compile_mcmc_kernel(
     data = runtime_ctx['data']
 
     # Check in-memory cache for compiled kernel
-    cache_key = _compute_cache_key(user_config, data, block_arrays)
+    cache_key = _compute_cache_key(user_config, data, block_arrays, run_params)
     compiled_chunk = _COMPILED_KERNEL_CACHE.get(cache_key)
 
     # Prepare data for passing as traced arguments (enables cross-session caching)

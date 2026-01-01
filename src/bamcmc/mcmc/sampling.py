@@ -14,9 +14,13 @@ import jax.numpy as jnp
 import jax.random as random
 from functools import partial
 
-from .batch_specs import SamplerType
-from .proposals import PROPOSAL_DISPATCH_TABLE
-from .mcmc_types import BlockArrays
+from ..batch_specs import SamplerType
+from ..proposals import PROPOSAL_DISPATCH_TABLE
+from ..settings import SettingSlot
+from .types import BlockArrays
+
+# Regularization for covariance inversion in MALA
+MALA_COV_NUGGET = 1e-6
 
 
 def propose_multivariate_block(key, current_block, block_mean, block_cov, coupled_blocks, block_mask, proposal_type, settings):

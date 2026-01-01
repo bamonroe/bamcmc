@@ -69,25 +69,26 @@ def load_checkpoint(filepath):
     if not filepath.exists():
         raise FileNotFoundError(f"Checkpoint not found: {filepath}")
 
-    data = np.load(filepath, allow_pickle=True)
+    # Use context manager to ensure NpzFile is closed after loading
+    # Copy arrays to avoid keeping memory-mapped file references
+    with np.load(filepath, allow_pickle=True) as data:
+        checkpoint = {
+            'states_A': data['states_A'].copy(),
+            'states_B': data['states_B'].copy(),
+            'keys_A': data['keys_A'].copy(),
+            'keys_B': data['keys_B'].copy(),
+            'iteration': int(data['iteration']),
+            'acceptance_counts': data['acceptance_counts'].copy(),
+            'posterior_id': str(data['posterior_id']),
+            'num_params': int(data['num_params']),
+            'num_chains_a': int(data['num_chains_a']),
+            'num_chains_b': int(data['num_chains_b']),
+            'num_superchains': int(data['num_superchains']),
+            'subchains_per_super': int(data['subchains_per_super']),
+        }
 
-    checkpoint = {
-        'states_A': data['states_A'],
-        'states_B': data['states_B'],
-        'keys_A': data['keys_A'],
-        'keys_B': data['keys_B'],
-        'iteration': int(data['iteration']),
-        'acceptance_counts': data['acceptance_counts'],
-        'posterior_id': str(data['posterior_id']),
-        'num_params': int(data['num_params']),
-        'num_chains_a': int(data['num_chains_a']),
-        'num_chains_b': int(data['num_chains_b']),
-        'num_superchains': int(data['num_superchains']),
-        'subchains_per_super': int(data['subchains_per_super']),
-    }
-
-    if 'metadata' in data:
-        checkpoint['metadata'] = data['metadata'].item()
+        if 'metadata' in data:
+            checkpoint['metadata'] = data['metadata'].item()
 
     return checkpoint
 
@@ -146,24 +147,25 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
     keys_A = jnp.asarray(checkpoint['keys_A'], dtype=jnp.uint32)
     keys_B = jnp.asarray(checkpoint['keys_B'], dtype=jnp.uint32)
 
-    # Fresh history array for this run
+    # Fresh history array for this run (use zeros to avoid uninitialized values)
     total_cols = num_params + num_gq
-    initial_history = jnp.empty((num_collect, num_chains, total_cols), dtype=dtype)
+    initial_history = jnp.zeros((num_collect, num_chains, total_cols), dtype=dtype)
 
     if user_config['save_likelihoods']:
         initial_lik_history = jnp.empty((num_collect, num_chains), dtype=dtype)
     else:
         initial_lik_history = jnp.empty((1,), dtype=dtype)
 
-    # Restore acceptance counts (cumulative across runs)
-    acceptance_counts = jnp.asarray(checkpoint['acceptance_counts'], dtype=jnp.int32)
+    # Reset acceptance counts for this run (each run reports its own rates)
+    acceptance_counts = jnp.zeros(num_blocks, dtype=jnp.int32)
 
-    # Continue from previous iteration count
-    current_iteration = jnp.array(checkpoint['iteration'], dtype=jnp.int32)
+    # Reset iteration to 0 for this run (kernel compiled with START_ITERATION=0)
+    # Global iteration tracking is handled via iteration_offset in user_config
+    current_iteration = jnp.array(0, dtype=jnp.int32)
 
     K = checkpoint['num_superchains']
     M = checkpoint['subchains_per_super']
-    print(f"Resuming from iteration {checkpoint['iteration']}")
+    print(f"Resuming from checkpoint at iteration {checkpoint['iteration']} (resetting run counter to 0)")
     print(f"Structure: {K} Superchains × {M} Subchains")
 
     initial_carry = (states_A, keys_A, states_B, keys_B,
@@ -199,29 +201,29 @@ def combine_batch_histories(batch_paths):
 
     for i, path in enumerate(batch_paths):
         print(f"Loading batch {i}: {path}...", flush=True)
-        data = np.load(path, allow_pickle=True)
+        # Use context manager to close NpzFile after loading
+        with np.load(path, allow_pickle=True) as data:
+            hist = data['history'].copy()
+            histories.append(hist)
+            batch_sizes.append(hist.shape[0])
+            iterations_list.append(data['iterations'].copy())
 
-        hist = data['history']
-        histories.append(hist)
-        batch_sizes.append(hist.shape[0])
-        iterations_list.append(data['iterations'])
+            if 'likelihoods' in data and data['likelihoods'] is not None:
+                lik = data['likelihoods']
+                # Handle case where likelihoods might be stored as object
+                if hasattr(lik, 'item') and lik.shape == ():
+                    lik = lik.item()
+                if lik is not None and not (isinstance(lik, np.ndarray) and lik.shape == (1,)):
+                    likelihoods_list.append(lik.copy() if hasattr(lik, 'copy') else lik)
 
-        if 'likelihoods' in data and data['likelihoods'] is not None:
-            lik = data['likelihoods']
-            # Handle case where likelihoods might be stored as object
-            if hasattr(lik, 'item') and lik.shape == ():
-                lik = lik.item()
-            if lik is not None and not (isinstance(lik, np.ndarray) and lik.shape == (1,)):
-                likelihoods_list.append(lik)
-
-        # Get metadata from first batch
-        if metadata is None:
-            metadata = {
-                'K': int(data['K']),
-                'M': int(data['M']),
-                'mcmc_config': data['mcmc_config'].item() if 'mcmc_config' in data else None,
-                'thin_iteration': int(data['thin_iteration']) if 'thin_iteration' in data else 1,
-            }
+            # Get metadata from first batch
+            if metadata is None:
+                metadata = {
+                    'K': int(data['K']),
+                    'M': int(data['M']),
+                    'mcmc_config': data['mcmc_config'].item() if 'mcmc_config' in data else None,
+                    'thin_iteration': int(data['thin_iteration']) if 'thin_iteration' in data else 1,
+                }
 
     # Concatenate along sample axis (axis=0)
     combined_history = np.concatenate(histories, axis=0)
@@ -278,6 +280,7 @@ def compute_rhat_from_history(history, K, M):
     Compute nested R-hat on combined/filtered history (CPU version).
 
     This is a NumPy implementation for post-hoc analysis of saved history.
+    Matches the GPU implementation in mcmc_diagnostics.py.
 
     Args:
         history: Sample history (num_samples, num_chains, num_cols)
@@ -292,45 +295,132 @@ def compute_rhat_from_history(history, K, M):
     if n_chains != K * M:
         raise ValueError(f"Chain count {n_chains} doesn't match K={K} × M={M} = {K*M}")
 
-    # Reshape to (n_samples, K, M, n_cols)
-    reshaped = history.reshape(n_samples, K, M, n_cols)
+    # 1. Reshape to Superchain structure: (n_samples, K, M, n_cols)
+    history_nested = history.reshape(n_samples, K, M, n_cols)
 
-    # Superchain means: (K, n_cols)
-    super_means = np.mean(reshaped, axis=(0, 2))
+    # 2. Compute Superchain Means (averaging over M subchains)
+    superchain_means_over_time = np.mean(history_nested, axis=2)  # (n_samples, K, n_cols)
 
-    # Subchain means: (K, M, n_cols)
-    sub_means = np.mean(reshaped, axis=0)
+    # 3. Compute Grand Means per Superchain (averaging over time)
+    superchain_means = np.mean(superchain_means_over_time, axis=0)  # (K, n_cols)
 
-    # Between-superchain variance: B_super
-    B_super = n_samples * M * np.var(super_means, axis=0, ddof=1)
+    # 4. Between-Superchain Variance (B)
+    B = n_samples * np.var(superchain_means, axis=0, ddof=1)
 
-    # Between-subchain within-superchain variance: B_sub
-    B_sub = n_samples * np.mean(np.var(sub_means, axis=1, ddof=1), axis=0)
+    # 5. Within-Superchain Variance (W)
+    # Component A: Between-subchain variance (only exists if M > 1)
+    if M > 1:
+        subchain_means_t = np.mean(history_nested, axis=0)  # (K, M, n_cols)
+        B_within = np.var(subchain_means_t, axis=1, ddof=1)  # (K, n_cols)
+    else:
+        B_within = np.zeros((K, n_cols))
 
-    # Within-chain variance: W
-    W = np.mean(np.var(history, axis=0, ddof=1), axis=0)
+    # Component B: Within-subchain variance (variance over time)
+    if n_samples > 1:
+        W_within_raw = np.var(history_nested, axis=0, ddof=1)  # (K, M, n_cols)
+        W_within = np.mean(W_within_raw, axis=1)  # (K, n_cols)
+    else:
+        W_within = np.zeros((K, n_cols))
 
-    # Nested R-hat formula
+    # Total Within Variance: Average over all K superchains
+    W = np.mean(B_within + W_within, axis=0)
+
+    # 6. Final Ratio using Gelman-Rubin formula
+    m = K
     n = n_samples
-    var_hat = ((n - 1) / n) * W + (1 / n) * B_sub + (1 / (n * M)) * B_super
+    V_hat = ((n - 1) / n) * W + B / n + B / (m * n)
 
-    # R-hat = sqrt(var_hat / W)
-    rhat = np.sqrt(var_hat / (W + 1e-10))
-
-    # Handle degenerate cases
-    rhat = np.where(np.isfinite(rhat), rhat, 1.0)
+    # R-hat = sqrt(V_hat / W)
+    # No special handling - stuck continuous params will show as NaN/inf
+    rhat = np.sqrt(V_hat / W)
 
     print(f"Nested R-hat ({K}×{M}):")
-    print(f"  Max: {np.max(rhat):.4f}")
-    print(f"  Median: {np.median(rhat):.4f}")
-    print(f"  Min: {np.min(rhat):.4f}")
+    print(f"  Max: {np.nanmax(rhat):.4f}")
+    print(f"  Median: {np.nanmedian(rhat):.4f}")
+    print(f"  Min: {np.nanmin(rhat):.4f}")
+
+    # Check for NaN/Inf
+    n_nan = np.sum(~np.isfinite(rhat))
+    if n_nan > 0:
+        print(f"  WARNING: {n_nan} params have NaN/Inf R-hat (zero variance - stuck or discrete)")
 
     # Threshold from Margossian et al. (2022)
     tau = 1e-4
     threshold = np.sqrt(1 + 1/M + tau)
-    if np.max(rhat) < threshold:
+    if np.nanmax(rhat) < threshold:
         print(f"  Converged (max < {threshold:.4f})")
     else:
-        print(f"  Not converged (max = {np.max(rhat):.4f} >= {threshold:.4f})")
+        print(f"  Not converged (max = {np.nanmax(rhat):.4f} >= {threshold:.4f})")
 
     return rhat
+
+
+
+def scan_checkpoints(output_dir: str, model_name: str):
+    """
+    Scan output directory for existing checkpoints and history files.
+
+    Args:
+        output_dir: Directory containing checkpoint files
+        model_name: Model name prefix for checkpoint files
+
+    Returns:
+        Dict with:
+            - checkpoint_files: List of (run_index, path) tuples, sorted by index
+            - history_files: List of (run_index, path) tuples, sorted by index
+            - latest_run_index: Highest run index found (-1 if none)
+            - latest_checkpoint: Path to most recent checkpoint (None if none)
+    """
+    import re
+
+    output_path = Path(output_dir)
+
+    checkpoint_files = []
+    history_files = []
+
+    if output_path.exists():
+        # Pattern: {model}_checkpoint{N}.npz
+        checkpoint_pattern = re.compile(rf'^{re.escape(model_name)}_checkpoint(\d+)\.npz$')
+        # Pattern: {model}_history_{NNN}.npz
+        history_pattern = re.compile(rf'^{re.escape(model_name)}_history_(\d+)\.npz$')
+
+        for f in output_path.iterdir():
+            if f.is_file():
+                cp_match = checkpoint_pattern.match(f.name)
+                if cp_match:
+                    run_idx = int(cp_match.group(1))
+                    checkpoint_files.append((run_idx, str(f)))
+
+                hist_match = history_pattern.match(f.name)
+                if hist_match:
+                    run_idx = int(hist_match.group(1))
+                    history_files.append((run_idx, str(f)))
+
+    # Sort by run index
+    checkpoint_files.sort(key=lambda x: x[0])
+    history_files.sort(key=lambda x: x[0])
+
+    latest_run_index = checkpoint_files[-1][0] if checkpoint_files else -1
+    latest_checkpoint = checkpoint_files[-1][1] if checkpoint_files else None
+
+    return {
+        'checkpoint_files': checkpoint_files,
+        'history_files': history_files,
+        'latest_run_index': latest_run_index,
+        'latest_checkpoint': latest_checkpoint,
+    }
+
+
+def get_latest_checkpoint(output_dir: str, model_name: str):
+    """
+    Get path to the most recent checkpoint for a model.
+
+    Args:
+        output_dir: Directory containing checkpoint files
+        model_name: Model name prefix
+
+    Returns:
+        Path to latest checkpoint, or None if no checkpoints exist
+    """
+    scan = scan_checkpoints(output_dir, model_name)
+    return scan['latest_checkpoint']
