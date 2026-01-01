@@ -10,9 +10,9 @@ import jax.numpy as jnp
 import jax
 import pytest
 
-from bamcmc.mcmc_backend import compute_nested_rhat, gen_rng_keys
-from bamcmc.mcmc_types import build_block_arrays
-from bamcmc.mcmc_config import initialize_mcmc_system
+from bamcmc.mcmc import compute_nested_rhat
+from bamcmc.mcmc.config import gen_rng_keys, initialize_mcmc_system
+from bamcmc.mcmc.types import build_block_arrays
 from bamcmc.batch_specs import BlockSpec, SamplerType, ProposalType
 from bamcmc.settings import SettingSlot, build_settings_matrix
 from bamcmc.error_handling import validate_mcmc_config
@@ -244,7 +244,7 @@ class TestBuildBlockArrays:
 class TestProposalSettings:
     """Test the proposal settings extraction and MIXTURE proposal."""
 
-    DEFAULT_ALPHA = 0.5
+    DEFAULT_CHAIN_PROB = 0.5
 
     def test_build_settings_matrix_default(self):
         """Test that default settings are extracted correctly as JAX arrays."""
@@ -255,22 +255,22 @@ class TestProposalSettings:
         settings_matrix = build_settings_matrix(batch_specs)
 
         assert settings_matrix.shape[0] == 2
-        alpha_values = settings_matrix[:, SettingSlot.ALPHA]
-        np.testing.assert_array_almost_equal(alpha_values, [self.DEFAULT_ALPHA, self.DEFAULT_ALPHA])
+        chain_prob_values = settings_matrix[:, SettingSlot.CHAIN_PROB]
+        np.testing.assert_array_almost_equal(chain_prob_values, [self.DEFAULT_CHAIN_PROB, self.DEFAULT_CHAIN_PROB])
 
-    def test_build_settings_matrix_with_alpha(self):
-        """Test that alpha setting is extracted for MIXTURE proposal."""
+    def test_build_settings_matrix_with_chain_prob(self):
+        """Test that chain_prob setting is extracted for MIXTURE proposal."""
         batch_specs = [
             BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.MIXTURE,
-                     settings={'alpha': 0.3}),
+                     settings={'chain_prob': 0.3}),
             BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.MIXTURE,
-                     settings={'alpha': 0.7}),
+                     settings={'chain_prob': 0.7}),
         ]
         settings_matrix = build_settings_matrix(batch_specs)
 
         assert settings_matrix.shape[0] == 2
-        alpha_values = settings_matrix[:, SettingSlot.ALPHA]
-        np.testing.assert_array_almost_equal(alpha_values, [0.3, 0.7])
+        chain_prob_values = settings_matrix[:, SettingSlot.CHAIN_PROB]
+        np.testing.assert_array_almost_equal(chain_prob_values, [0.3, 0.7])
 
     def test_build_settings_matrix_direct_sampler(self):
         """Test that direct samplers get default settings."""
@@ -279,8 +279,8 @@ class TestProposalSettings:
         ]
         settings_matrix = build_settings_matrix(batch_specs)
 
-        alpha_values = settings_matrix[:, SettingSlot.ALPHA]
-        np.testing.assert_array_almost_equal(alpha_values, [self.DEFAULT_ALPHA])
+        chain_prob_values = settings_matrix[:, SettingSlot.CHAIN_PROB]
+        np.testing.assert_array_almost_equal(chain_prob_values, [self.DEFAULT_CHAIN_PROB])
 
     def test_mixture_proposal_type_enum(self):
         """Test that MIXTURE is properly defined in ProposalType enum."""
@@ -315,14 +315,14 @@ class TestMixtureProposal:
         block_mask = jnp.array([1.0, 1.0])
 
         operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                   make_settings_array(alpha=0.5))
+                   make_settings_array(chain_prob=0.5))
         proposal, log_ratio, new_key = mixture_proposal(operand)
 
         assert proposal.shape == (2,)
         assert isinstance(float(log_ratio), float)
 
-    def test_mixture_proposal_alpha_zero(self):
-        """Test mixture with alpha=0 (should behave like self_mean)."""
+    def test_mixture_proposal_chain_prob_zero(self):
+        """Test mixture with chain_prob=0 (should behave like self_mean)."""
         from bamcmc.proposals import mixture_proposal
 
         current_block = jnp.array([1.0, 2.0])
@@ -333,7 +333,7 @@ class TestMixtureProposal:
         for i in range(100):
             key = jax.random.PRNGKey(i)
             operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                       make_settings_array(alpha=0.0))
+                       make_settings_array(chain_prob=0.0))
             prop, _, _ = mixture_proposal(operand)
             proposals.append(prop)
 
@@ -341,8 +341,8 @@ class TestMixtureProposal:
         mean_proposal = jnp.mean(proposals, axis=0)
         assert jnp.allclose(mean_proposal, current_block, atol=0.5)
 
-    def test_mixture_proposal_alpha_one(self):
-        """Test mixture with alpha=1 (should behave like chain_mean)."""
+    def test_mixture_proposal_chain_prob_one(self):
+        """Test mixture with chain_prob=1 (should behave like chain_mean)."""
         from bamcmc.proposals import mixture_proposal
 
         current_block = jnp.array([1.0, 2.0])
@@ -354,7 +354,7 @@ class TestMixtureProposal:
         for i in range(100):
             key = jax.random.PRNGKey(i)
             operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                       make_settings_array(alpha=1.0))
+                       make_settings_array(chain_prob=1.0))
             prop, _, _ = mixture_proposal(operand)
             proposals.append(prop)
 
@@ -372,7 +372,7 @@ class TestMixtureProposal:
         block_mask = jnp.array([1.0, 1.0])
 
         operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                   make_settings_array(alpha=0.5))
+                   make_settings_array(chain_prob=0.5))
         _, log_ratio, _ = mixture_proposal(operand)
 
         assert jnp.isfinite(log_ratio)
@@ -405,7 +405,7 @@ class TestMultinomialProposal:
         step_mean, step_cov = self._make_dummy_stats(2)
 
         operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                   make_settings_array(alpha=0.05, n_categories=10))
+                   make_settings_array(uniform_weight=0.05, n_categories=10))
         proposal, log_ratio, new_key = multinomial_proposal(operand)
 
         assert proposal.shape == (2,)
@@ -426,7 +426,7 @@ class TestMultinomialProposal:
         for i in range(200):
             key = jax.random.PRNGKey(i)
             operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                       make_settings_array(alpha=0.01, n_categories=10))
+                       make_settings_array(uniform_weight=0.01, n_categories=10))
             prop, _, _ = multinomial_proposal(operand)
             proposals.append(float(prop[0]))
 
@@ -445,7 +445,7 @@ class TestMultinomialProposal:
         step_mean, step_cov = self._make_dummy_stats(1)
 
         operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                   make_settings_array(alpha=0.05, n_categories=5))
+                   make_settings_array(uniform_weight=0.05, n_categories=5))
         _, log_ratio, _ = multinomial_proposal(operand)
 
         assert jnp.isfinite(log_ratio)

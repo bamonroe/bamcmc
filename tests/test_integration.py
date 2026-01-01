@@ -12,8 +12,8 @@ import jax.numpy as jnp
 from scipy import stats as scipy_stats
 import pytest
 
-from bamcmc.mcmc_backend import rmcmc
-from bamcmc.mcmc_utils import clean_config
+from bamcmc.mcmc import rmcmc_single
+from bamcmc.mcmc.utils import clean_config
 from bamcmc.registry import register_posterior, _REGISTRY
 from bamcmc import test_posteriors
 
@@ -231,7 +231,7 @@ class TestBetaBernoulliPooled:
 
         mcmc_config['posterior_id'] = 'test_beta_bernoulli_pooled'
 
-        results, _ = rmcmc(mcmc_config, data)
+        results, _ = rmcmc_single(mcmc_config, data)
         history = results['history']
         diagnostics = results['diagnostics']
 
@@ -254,7 +254,7 @@ class TestNormalNormalPooled:
 
         mcmc_config['posterior_id'] = 'test_normal_normal_pooled'
 
-        results, _ = rmcmc(mcmc_config, data)
+        results, _ = rmcmc_single(mcmc_config, data)
         history = results['history']
         diagnostics = results['diagnostics']
 
@@ -277,7 +277,7 @@ class TestConvergenceDiagnostics:
 
         mcmc_config['posterior_id'] = 'test_beta_bernoulli_pooled'
 
-        results, _ = rmcmc(mcmc_config, data)
+        results, _ = rmcmc_single(mcmc_config, data)
         diagnostics = results['diagnostics']
 
         assert 'rhat' in diagnostics
@@ -291,7 +291,7 @@ class TestConvergenceDiagnostics:
 
         mcmc_config['posterior_id'] = 'test_beta_bernoulli_pooled'
 
-        results, _ = rmcmc(mcmc_config, data)
+        results, _ = rmcmc_single(mcmc_config, data)
         diagnostics = results['diagnostics']
 
         assert 'compile_time' in diagnostics
@@ -351,7 +351,7 @@ def run_single_test(model_name, verbose=False):
 
     try:
         print("Running MCMC sampler...")
-        results, _ = rmcmc(mcmc_config, data)
+        results, _ = rmcmc_single(mcmc_config, data)
         history = results['history']
         diagnostics = results['diagnostics']
 

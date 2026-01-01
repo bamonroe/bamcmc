@@ -95,13 +95,15 @@ def register_test_posteriors():
             del _REGISTRY[name]
 
 
-def make_settings_array(alpha=None, n_categories=None):
+def make_settings_array(chain_prob=None, n_categories=None, cov_mult=None, uniform_weight=None):
     """
     Create a settings array for testing proposal functions.
 
     Args:
-        alpha: Mixture weight (default: 0.5)
+        chain_prob: Probability of using chain_mean in mixture proposal (default: 0.5)
         n_categories: Number of categories for multinomial (default: 4)
+        cov_mult: Covariance multiplier for self_mean proposal (default: 1.0)
+        uniform_weight: Weight of uniform distribution in multinomial proposal (default: 0.4)
 
     Returns:
         JAX array of shape (MAX_SETTINGS,) with specified values
@@ -109,8 +111,12 @@ def make_settings_array(alpha=None, n_categories=None):
     settings = np.zeros(MAX_SETTINGS, dtype=np.float32)
     for slot, default in SETTING_DEFAULTS.items():
         settings[slot] = default
-    if alpha is not None:
-        settings[SettingSlot.ALPHA] = alpha
+    if chain_prob is not None:
+        settings[SettingSlot.CHAIN_PROB] = chain_prob
     if n_categories is not None:
         settings[SettingSlot.N_CATEGORIES] = n_categories
+    if cov_mult is not None:
+        settings[SettingSlot.COV_MULT] = cov_mult
+    if uniform_weight is not None:
+        settings[SettingSlot.UNIFORM_WEIGHT] = uniform_weight
     return jnp.array(settings)

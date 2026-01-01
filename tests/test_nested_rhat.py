@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as random
 
-from bamcmc.mcmc_backend import compute_nested_rhat
+from bamcmc.mcmc import compute_nested_rhat
 
 
 class TestComputeNestedRhat:
