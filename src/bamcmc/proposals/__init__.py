@@ -7,7 +7,7 @@ ProposalType enum is defined in batch_specs.py.
 To add a new proposal:
 1. Add enum value to ProposalType in batch_specs.py
 2. Create new file in proposals/ directory with proposal function
-3. Import and add to PROPOSAL_DISPATCH_TABLE in dispatch.py
+3. Add to PROPOSAL_REGISTRY in mcmc/sampling.py
 4. Export from this __init__.py
 
 Each proposal function computes its own Hastings ratio - there's no separate
@@ -23,6 +23,11 @@ All proposal functions accept a single operand tuple:
 
 Settings are passed as a JAX array with values accessed by position using SettingSlot.
 The grad_fn is a function that maps block values to gradients of log posterior.
+Non-MALA proposals ignore grad_fn; MALA uses it for Langevin drift computation.
+
+Note: The dispatch table is built dynamically in sampling.py based on which
+proposals are actually used by the model. This ensures JAX only traces the
+proposals needed, avoiding memory overhead from unused proposals.
 """
 
 from .self_mean import self_mean_proposal
@@ -30,7 +35,6 @@ from .chain_mean import chain_mean_proposal
 from .mixture import mixture_proposal
 from .multinomial import multinomial_proposal
 from .mala import mala_proposal
-from .dispatch import PROPOSAL_DISPATCH_TABLE
 
 __all__ = [
     'self_mean_proposal',
@@ -38,5 +42,4 @@ __all__ = [
     'mixture_proposal',
     'multinomial_proposal',
     'mala_proposal',
-    'PROPOSAL_DISPATCH_TABLE',
 ]

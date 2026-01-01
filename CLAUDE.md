@@ -42,33 +42,35 @@ pytest tests/ -v
 bamcmc/
 ├── src/bamcmc/
 │   ├── __init__.py           # Public API exports
-│   ├── mcmc_backend.py       # Main entry point (rmcmc, run_benchmark)
-│   ├── mcmc_types.py         # Core dataclasses (BlockArrays, RunParams)
-│   ├── mcmc_config.py        # Configuration and initialization
-│   ├── mcmc_sampling.py      # Proposal and MH sampling logic
-│   ├── mcmc_scan.py          # JAX scan body and block statistics
-│   ├── mcmc_compile.py       # Kernel compilation and caching
-│   ├── mcmc_diagnostics.py   # Nested R-hat computation
-│   ├── batch_specs.py        # BlockSpec, SamplerType, ProposalType
-│   ├── registry.py           # Posterior registration system
-│   ├── settings.py           # Per-block settings (SettingSlot)
+│   ├── mcmc/                  # Core MCMC implementation
+│   │   ├── __init__.py       # Subpackage exports
+│   │   ├── backend.py        # Main entry points (rmcmc, rmcmc_single)
+│   │   ├── types.py          # Core dataclasses (BlockArrays, RunParams)
+│   │   ├── config.py         # Configuration and initialization
+│   │   ├── sampling.py       # Proposal and MH sampling logic
+│   │   ├── scan.py           # JAX scan body and block statistics
+│   │   ├── compile.py        # Kernel compilation and caching
+│   │   ├── diagnostics.py    # R-hat computation and acceptance rates
+│   │   └── utils.py          # Misc utilities
 │   ├── proposals/            # Proposal distribution implementations
 │   │   ├── __init__.py
-│   │   ├── dispatch.py       # PROPOSAL_DISPATCH_TABLE
 │   │   ├── self_mean.py      # Random walk proposal
 │   │   ├── chain_mean.py     # Independent proposal
 │   │   ├── mixture.py        # Mixture of self/chain mean
-│   │   └── multinomial.py    # Discrete parameter proposal
+│   │   ├── multinomial.py    # Discrete parameter proposal
+│   │   └── mala.py           # MALA (gradient-based) proposal
+│   ├── batch_specs.py        # BlockSpec, SamplerType, ProposalType
+│   ├── registry.py           # Posterior registration system
+│   ├── settings.py           # Per-block settings (SettingSlot)
 │   ├── checkpoint_helpers.py # Save/load checkpoints, combine batches
 │   ├── reset_utils.py        # Reset stuck chains from checkpoint
 │   ├── posterior_benchmark.py# Benchmark caching with posterior hashing
 │   ├── error_handling.py     # Validation and diagnostics
-│   ├── mcmc_utils.py         # Misc utilities
 │   ├── jax_config.py         # JAX environment configuration
 │   └── test_posteriors.py    # Conjugate test models with analytical solutions
 ├── tests/
 │   ├── conftest.py           # Pytest fixtures
-│   ├── test_unit.py          # Unit tests (30 tests)
+│   ├── test_unit.py          # Unit tests (38 tests)
 │   ├── test_nested_rhat.py   # Nested R-hat tests
 │   └── test_integration.py   # Full MCMC validation tests
 └── pyproject.toml
@@ -119,6 +121,7 @@ BlockSpec(
 - `CHAIN_MEAN` (1): Independent proposal centered on population mean
 - `MIXTURE` (2): With probability alpha use CHAIN_MEAN, else SELF_MEAN
 - `MULTINOMIAL` (3): For discrete parameters on integer grid
+- `MALA` (4): Metropolis-adjusted Langevin (gradient-based, preconditioned)
 
 ### 3. Data Format
 
@@ -196,11 +199,12 @@ class BlockArrays:
     indices: jnp.ndarray         # (n_blocks, max_size) parameter indices
     types: jnp.ndarray           # (n_blocks,) SamplerType per block
     masks: jnp.ndarray           # (n_blocks, max_size) valid param mask
-    proposal_types: jnp.ndarray  # (n_blocks,) ProposalType per block
+    proposal_types: jnp.ndarray  # (n_blocks,) remapped indices into compact dispatch
     settings_matrix: jnp.ndarray # (n_blocks, MAX_SETTINGS)
     max_size: int
     num_blocks: int
     total_params: int
+    used_proposal_types: tuple   # Original ProposalType values used (dispatch order)
 ```
 
 ### RunParams (frozen dataclass)
@@ -264,17 +268,19 @@ results = run_benchmark(
 
 ## Module Responsibilities
 
-### mcmc_backend.py
-- `rmcmc()`: Main sampling function
-- `run_benchmark()`: Lightweight performance testing
+### mcmc/ subpackage
+
+#### mcmc/backend.py
+- `rmcmc()`: Multi-run sampling with checkpoint management
+- `rmcmc_single()`: Single MCMC run
 - Orchestrates configuration, compilation, and execution
 
-### mcmc_types.py
+#### mcmc/types.py
 - `BlockArrays`: JAX-compatible block specification container
 - `RunParams`: Immutable run parameters
 - `build_block_arrays()`: Factory function
 
-### mcmc_config.py
+#### mcmc/config.py
 - `configure_mcmc_system()`: Setup model context from config, returns `(user_config, runtime_ctx, model_context)`
   - `user_config`: Serializable config (no JAX types) that can be saved to disk
   - `runtime_ctx`: JAX-dependent objects (dtypes, data arrays, RNG keys)
@@ -283,24 +289,25 @@ results = run_benchmark(
 - `validate_mcmc_inputs()`: Validate data shapes
 - `gen_rng_keys()`: Generate JAX RNG keys
 
-### mcmc_sampling.py
+#### mcmc/sampling.py
 - `create_mh_proposal()`: Build proposal for a block
 - `metropolis_hastings_step()`: Single MH accept/reject step
 - Block update logic using proposal dispatch
 
-### mcmc_scan.py
+#### mcmc/scan.py
 - `mcmc_scan_body()`: Inner loop body for jax.lax.scan
 - `compute_block_stats()`: Calculate proposal statistics
 - Handles collection, thinning, and acceptance counting
 
-### mcmc_compile.py
+#### mcmc/compile.py
 - `compile_mcmc_kernel()`: AOT compilation with caching
 - `benchmark_mcmc_sampler()`: Time the compiled kernel
 - `CHUNK_SIZE`: Iteration chunk size for compilation
 
-### mcmc_diagnostics.py
-- `compute_nested_rhat()`: Nested R-hat calculation
-- Handles both M=1 (standard) and M>1 (nested) cases
+#### mcmc/diagnostics.py
+- `compute_nested_rhat()`: Nested R-hat calculation (JAX/GPU)
+- `compute_and_print_rhat()`: Compute and print R-hat summary
+- `print_acceptance_summary()`: Print MH acceptance rates
 
 ### proposals/
 Each proposal implements:
@@ -362,27 +369,32 @@ Test posteriors in `test_posteriors.py` have analytical solutions for validation
 1. Add enum to `batch_specs.py`:
    ```python
    class ProposalType(IntEnum):
-       MY_PROPOSAL = 4
+       MY_PROPOSAL = 5  # Next available index
    ```
 
 2. Create `proposals/my_proposal.py`:
    ```python
    def my_proposal(operand):
-       key, current, mean, cov, coupled, mask, settings = operand
+       key, current, mean, cov, coupled, mask, settings, grad_fn = operand
        # ... compute proposal and log ratio
+       # grad_fn available for gradient-based proposals (ignore if not needed)
        return proposal, log_ratio, new_key
    ```
 
-3. Add to `proposals/dispatch.py`:
+3. Add to `PROPOSAL_REGISTRY` in `mcmc/sampling.py`:
    ```python
-   PROPOSAL_DISPATCH_TABLE = [
-       self_mean_proposal,
-       chain_mean_proposal,
-       mixture_proposal,
-       multinomial_proposal,
-       my_proposal,  # Index 4
-   ]
+   PROPOSAL_REGISTRY = {
+       int(ProposalType.SELF_MEAN): self_mean_proposal,
+       # ... existing entries ...
+       int(ProposalType.MY_PROPOSAL): my_proposal,
+   }
    ```
+
+4. Export from `proposals/__init__.py`
+
+Note: The dispatch table is built dynamically based on which proposals are
+actually used by the model. This ensures JAX only traces needed proposals,
+avoiding memory overhead from unused ones.
 
 ### Defining a New Posterior
 
