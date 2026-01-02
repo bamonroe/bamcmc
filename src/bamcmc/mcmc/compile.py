@@ -129,8 +129,14 @@ def _run_mcmc_chunk(carry, data_int, data_float, data_static, block_arrays,
         run_params=run_params
     )
 
-    chunk_range = jnp.arange(CHUNK_SIZE)
-    return jax.lax.scan(scan_body, carry, chunk_range)
+    # Use fori_loop since we don't need accumulated outputs (scan_body returns None)
+    # This is cleaner and makes it explicit that we only care about the final carry
+    def fori_body(i, c):
+        new_carry, _ = scan_body(c, i)
+        return new_carry
+
+    final_carry = jax.lax.fori_loop(0, CHUNK_SIZE, fori_body, carry)
+    return final_carry, None
 
 
 def benchmark_mcmc_sampler(compiled_chunk_fn, initial_carry, benchmark_iters: int) -> Dict[str, float]:
