@@ -105,12 +105,18 @@ def metropolis_block_step(operand, log_post_fn, grad_log_post_fn, used_proposal_
 
     # Create block-level gradient wrapper - available to all proposals via closure
     # Non-MALA proposals simply ignore it; MALA uses it for drift computation
+    #
+    # IMPORTANT: We compute the gradient w.r.t. block_values ONLY, not the full
+    # chain_state. This avoids computing gradients for all 3600+ parameters when
+    # we only need gradients for 2 (the block being updated). This significantly
+    # reduces memory usage for MALA proposals.
     def block_grad_fn(block_values):
-        """Compute gradient of log posterior w.r.t. block values."""
-        full_state = chain_state.at[safe_indices].set(block_values)
-        full_grad = grad_log_post_fn(full_state, block_idx_vec)
-        block_grad = jnp.take(full_grad, safe_indices) * block_mask
-        return block_grad
+        """Compute gradient of log posterior w.r.t. block values only."""
+        def log_post_of_block(bv):
+            full_state = chain_state.at[safe_indices].set(bv)
+            return log_post_fn(full_state, block_idx_vec)
+
+        return jax.grad(log_post_of_block)(block_values) * block_mask
 
     # Generate proposal using unified interface with compact dispatch table
     # Only proposals in used_proposal_types are traced by JAX
