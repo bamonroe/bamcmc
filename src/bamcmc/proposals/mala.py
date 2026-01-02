@@ -5,12 +5,18 @@ Gradient-based proposal that uses the score function to bias proposals
 toward higher density regions. Preconditioned using the empirical
 covariance from coupled chains.
 
-Proposal: x' = x + (ε²/2) * Σ * ∇log p(x) + ε * L * z
+Proposal: x' = x + (cov_mult/2) * Σ * ∇log p(x) + √cov_mult * L * z
 where:
-    - ε is the step size
+    - cov_mult scales the proposal variance (same as other proposals)
     - Σ is the preconditioning matrix (from coupled chains)
     - L is the Cholesky factor of Σ
     - z ~ N(0, I)
+
+The proposal distribution is: q(x'|x) = N(x + drift, cov_mult * Σ)
+
+Using cov_mult (instead of epsilon) makes the interface consistent with
+MIXTURE and SELF_MEAN proposals, where cov_mult=1.0 means the proposal
+variance equals the coupled-chain covariance.
 """
 
 import jax
@@ -42,7 +48,9 @@ def mala_proposal(operand):
             coupled_blocks: Raw states (unused by MALA)
             block_mask: Mask for valid parameters (1.0 = active, 0.0 = inactive)
             settings: JAX array of settings
-                [EPSILON] - step size (default 0.1)
+                [COV_MULT] - covariance multiplier (default 1.0)
+                            Proposal variance = cov_mult * Σ
+                            Same interface as MIXTURE and SELF_MEAN
             grad_fn: Function that takes block values and returns gradient
                      of log posterior w.r.t. those values
 
@@ -54,7 +62,11 @@ def mala_proposal(operand):
     key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn = operand
     new_key, proposal_key = random.split(key)
 
-    epsilon = settings[SettingSlot.EPSILON]
+    # Use cov_mult for consistent interface with other proposals
+    # Internally: epsilon = sqrt(cov_mult), so variance = epsilon² * Σ = cov_mult * Σ
+    cov_mult = settings[SettingSlot.COV_MULT]
+    epsilon = jnp.sqrt(cov_mult)
+
     d = current_block.shape[0]
 
     # Regularize covariance for numerical stability
@@ -66,10 +78,11 @@ def mala_proposal(operand):
     # Gradient at current state
     current_grad = grad_fn(current_block)
 
-    # Preconditioned drift: (ε²/2) * Σ * ∇log p(x)
-    drift_current = 0.5 * epsilon**2 * (cov_reg @ current_grad)
+    # Preconditioned drift: (cov_mult/2) * Σ * ∇log p(x)
+    # Equivalently: (ε²/2) * Σ * ∇log p(x)
+    drift_current = 0.5 * cov_mult * (cov_reg @ current_grad)
 
-    # Noise term: ε * L * z
+    # Noise term: √cov_mult * L * z = ε * L * z
     noise = random.normal(proposal_key, shape=current_block.shape)
     diffusion = epsilon * (L @ noise)
 
@@ -77,18 +90,18 @@ def mala_proposal(operand):
     proposal = current_block + (drift_current + diffusion) * block_mask
 
     # --- Hastings ratio computation ---
-    # q(x'|x) = N(x' | x + drift(x), ε²Σ)
-    # q(x|x') = N(x | x' + drift(x'), ε²Σ)
+    # q(x'|x) = N(x' | x + drift(x), cov_mult * Σ)
+    # q(x|x') = N(x | x' + drift(x'), cov_mult * Σ)
     # log ratio = log q(x|x') - log q(x'|x)
 
     # Gradient at proposed state
     proposed_grad = grad_fn(proposal)
 
     # Drift at proposed state
-    drift_proposed = 0.5 * epsilon**2 * (cov_reg @ proposed_grad)
+    drift_proposed = 0.5 * cov_mult * (cov_reg @ proposed_grad)
 
-    # Precision matrix scaled by 1/ε²
-    # For N(μ, ε²Σ), the quadratic form is (1/ε²) * (x-μ)ᵀ Σ⁻¹ (x-μ)
+    # Precision matrix scaled by 1/cov_mult
+    # For N(μ, cov_mult*Σ), quadratic form is (1/cov_mult) * (x-μ)ᵀ Σ⁻¹ (x-μ)
     # We use solve_triangular for numerical stability
 
     # Forward: x' given x
