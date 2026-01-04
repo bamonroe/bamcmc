@@ -65,10 +65,12 @@ class ProposalType(IntEnum):
     MIXTURE = 2        # Mixture: with prob alpha use CHAIN_MEAN, else SELF_MEAN
     MULTINOMIAL = 3    # Discrete: sample from empirical distribution on grid
     MALA = 4           # Metropolis-adjusted Langevin (gradient-based, preconditioned)
+    MEAN_MALA = 5      # Chain-mean MALA: gradient at coupled mean, independent proposal
+    MEAN_WEIGHTED = 6  # Adaptive interpolation between self_mean and chain_mean
 
     # Future proposals - add new enum values here, implement in proposals.py
-    # ADAPTIVE = 5       # Adaptive covariance during burn-in
-    # PRECONDITIONED = 6 # Use custom preconditioning matrix
+    # ADAPTIVE = 7       # Adaptive covariance during burn-in
+    # PRECONDITIONED = 8 # Use custom preconditioning matrix
 
     def __str__(self):
         return self.name.replace('_', ' ').title()

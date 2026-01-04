@@ -21,6 +21,8 @@ from ..proposals import (
     mixture_proposal,
     multinomial_proposal,
     mala_proposal,
+    mean_mala_proposal,
+    mean_weighted_proposal,
 )
 from .types import BlockArrays
 
@@ -33,6 +35,8 @@ PROPOSAL_REGISTRY = {
     int(ProposalType.MIXTURE): mixture_proposal,
     int(ProposalType.MULTINOMIAL): multinomial_proposal,
     int(ProposalType.MALA): mala_proposal,
+    int(ProposalType.MEAN_MALA): mean_mala_proposal,
+    int(ProposalType.MEAN_WEIGHTED): mean_weighted_proposal,
 }
 
 

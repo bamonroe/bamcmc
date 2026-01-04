@@ -35,6 +35,8 @@ from .chain_mean import chain_mean_proposal
 from .mixture import mixture_proposal
 from .multinomial import multinomial_proposal
 from .mala import mala_proposal
+from .mean_mala import mean_mala_proposal
+from .mean_weighted import mean_weighted_proposal
 
 __all__ = [
     'self_mean_proposal',
@@ -42,4 +44,6 @@ __all__ = [
     'mixture_proposal',
     'multinomial_proposal',
     'mala_proposal',
+    'mean_mala_proposal',
+    'mean_weighted_proposal',
 ]
