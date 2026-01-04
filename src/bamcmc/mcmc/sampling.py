@@ -23,6 +23,7 @@ from ..proposals import (
     mala_proposal,
     mean_mala_proposal,
     mean_weighted_proposal,
+    mode_weighted_proposal,
 )
 from .types import BlockArrays
 
@@ -37,18 +38,20 @@ PROPOSAL_REGISTRY = {
     int(ProposalType.MALA): mala_proposal,
     int(ProposalType.MEAN_MALA): mean_mala_proposal,
     int(ProposalType.MEAN_WEIGHTED): mean_weighted_proposal,
+    int(ProposalType.MODE_WEIGHTED): mode_weighted_proposal,
 }
 
 
 def propose_multivariate_block(key, current_block, block_mean, block_cov, coupled_blocks,
-                               block_mask, proposal_type, settings, grad_fn,
+                               block_mode, block_mask, proposal_type, settings, grad_fn,
                                used_proposal_types):
     """
     Generate a proposal for a parameter block.
 
-    All proposal types receive the same interface including grad_fn.
+    All proposal types receive the same interface including grad_fn and block_mode.
     Non-gradient proposals (self_mean, chain_mean, mixture, multinomial) ignore grad_fn.
     MALA uses grad_fn for computing the Langevin drift.
+    MODE_WEIGHTED uses block_mode for interpolation toward mode.
 
     Args:
         key: JAX random key
@@ -56,6 +59,7 @@ def propose_multivariate_block(key, current_block, block_mean, block_cov, couple
         block_mean: Precomputed mean from coupled blocks (block_size,)
         block_cov: Precomputed covariance from coupled blocks (block_size, block_size)
         coupled_blocks: Raw states from opposite group (n_chains, block_size) - for discrete proposals
+        block_mode: Mode chain values (block_size,) - chain with highest log posterior
         block_mask: Mask for valid parameters
         proposal_type: REMAPPED index into compact dispatch table (not original ProposalType)
         settings: JAX array of proposal-specific settings
@@ -69,14 +73,14 @@ def propose_multivariate_block(key, current_block, block_mean, block_cov, couple
         log_ratio: Log Hastings ratio
         new_key: Updated random key
     """
-    # Pack base arguments (without grad_fn - it's captured via closure)
+    # Pack base arguments (without grad_fn and block_mode - they're captured via closure)
     operand = (key, current_block, block_mean, block_cov, coupled_blocks, block_mask, settings)
 
     # Build COMPACT dispatch table containing only the proposals actually used
     # This is the key optimization: JAX only traces proposals in this table,
     # so unused proposals don't increase memory/compile time
     dispatch_table = [
-        (lambda fn: lambda op: fn((*op, grad_fn)))(PROPOSAL_REGISTRY[ptype])
+        (lambda fn: lambda op: fn((*op, grad_fn, block_mode)))(PROPOSAL_REGISTRY[ptype])
         for ptype in used_proposal_types
     ]
 
@@ -94,7 +98,7 @@ def metropolis_block_step(operand, log_post_fn, grad_log_post_fn, used_proposal_
 
     Args:
         operand: Tuple of (key, chain_state, block_idx_vec, block_mean, block_cov,
-                          coupled_blocks, block_mask, proposal_type, settings)
+                          coupled_blocks, block_mode, block_mask, proposal_type, settings)
         log_post_fn: Log posterior function
         grad_log_post_fn: Pre-created gradient function (for MALA proposals)
         used_proposal_types: Tuple of ProposalType values actually used (for compact dispatch)
@@ -102,7 +106,7 @@ def metropolis_block_step(operand, log_post_fn, grad_log_post_fn, used_proposal_
     Returns:
         next_state, new_key, chosen_lp, accepted
     """
-    key, chain_state, block_idx_vec, block_mean, block_cov, coupled_blocks, block_mask, proposal_type, settings = operand
+    key, chain_state, block_idx_vec, block_mean, block_cov, coupled_blocks, block_mode, block_mask, proposal_type, settings = operand
 
     safe_indices = jnp.clip(block_idx_vec, 0, chain_state.shape[0] - 1)
     current_block_values = jnp.take(chain_state, safe_indices)
@@ -126,7 +130,7 @@ def metropolis_block_step(operand, log_post_fn, grad_log_post_fn, used_proposal_
     # Only proposals in used_proposal_types are traced by JAX
     proposed_block_values, log_den_ratio, key = propose_multivariate_block(
         key, current_block_values, block_mean, block_cov, coupled_blocks,
-        block_mask, proposal_type, settings, block_grad_fn, used_proposal_types
+        block_mode, block_mask, proposal_type, settings, block_grad_fn, used_proposal_types
     )
 
     actual_proposal_values = jnp.where(block_mask, proposed_block_values, current_block_values)
@@ -189,7 +193,7 @@ def direct_block_step(operand, direct_sampler_fn):
     Returns:
         next_state, new_key, log_prob (0.0), accepted (1.0)
     """
-    key, chain_state, block_idx_vec, _, _, _, _, _, _ = operand
+    key, chain_state, block_idx_vec, _, _, _, _, _, _, _ = operand
     new_state, new_key = direct_sampler_fn(key, chain_state, block_idx_vec)
     # Safeguard: replace any NaN/Inf values with original state values
     # This prevents bad samples from propagating through the chain
@@ -199,7 +203,7 @@ def direct_block_step(operand, direct_sampler_fn):
     return new_state, new_key, 0.0, accepted
 
 
-def full_chain_iteration(key, chain_state, block_means, block_covs, coupled_blocks,
+def full_chain_iteration(key, chain_state, block_means, block_covs, coupled_blocks, block_modes,
                          block_arrays: BlockArrays,
                          log_post_fn, grad_log_post_fn, direct_sampler_fn):
     """
@@ -211,6 +215,7 @@ def full_chain_iteration(key, chain_state, block_means, block_covs, coupled_bloc
         block_means: Precomputed means for each block (n_blocks, max_block_size)
         block_covs: Precomputed covariances (n_blocks, max_block_size, max_block_size)
         coupled_blocks: Raw block data for discrete proposals (n_blocks, n_chains, max_block_size)
+        block_modes: Mode chain values for each block (n_blocks, max_block_size)
         block_arrays: BlockArrays with indices, types, masks, proposal_types, settings
         log_post_fn: Log posterior function
         grad_log_post_fn: Gradient of log posterior (for MALA proposals)
@@ -231,6 +236,7 @@ def full_chain_iteration(key, chain_state, block_means, block_covs, coupled_bloc
         b_mean    = block_means[block_i]
         b_cov     = block_covs[block_i]
         b_coupled = coupled_blocks[block_i]
+        b_mode    = block_modes[block_i]
         b_proposal_type = block_arrays.proposal_types[block_i]
         b_settings = block_arrays.settings_matrix[block_i]
 
@@ -238,7 +244,7 @@ def full_chain_iteration(key, chain_state, block_means, block_covs, coupled_bloc
             b_type == SamplerType.DIRECT_CONJUGATE,
             direct_step,
             metro_step,
-            (current_key, current_state, b_indices, b_mean, b_cov, b_coupled, b_mask, b_proposal_type, b_settings)
+            (current_key, current_state, b_indices, b_mean, b_cov, b_coupled, b_mode, b_mask, b_proposal_type, b_settings)
         )
         return (updated_state, new_key), (lp_val, accepted)
 
@@ -250,8 +256,8 @@ def full_chain_iteration(key, chain_state, block_means, block_covs, coupled_bloc
     return final_state, final_key, block_lps, block_accepts
 
 
-@partial(jax.vmap, in_axes=(0, 0, None, None, None, None, None, None, None), out_axes=(0, 0, 0, 0))
-def parallel_gibbs_iteration(keys, chain_states, block_means, block_covs, coupled_blocks,
+@partial(jax.vmap, in_axes=(0, 0, None, None, None, None, None, None, None, None), out_axes=(0, 0, 0, 0))
+def parallel_gibbs_iteration(keys, chain_states, block_means, block_covs, coupled_blocks, block_modes,
                              block_arrays: BlockArrays,
                              log_post_fn, grad_log_post_fn, direct_sampler_fn):
     """
@@ -263,11 +269,12 @@ def parallel_gibbs_iteration(keys, chain_states, block_means, block_covs, couple
         block_means: Precomputed means (n_blocks, max_block_size) - shared across chains
         block_covs: Precomputed covariances (n_blocks, max_block_size, max_block_size) - shared
         coupled_blocks: Raw block data (n_blocks, n_chains, max_block_size) - shared
+        block_modes: Mode chain values (n_blocks, max_block_size) - shared across chains
         block_arrays: BlockArrays with all block configuration - shared across chains
         log_post_fn: Log posterior function
         grad_log_post_fn: Gradient of log posterior (for MALA proposals)
         direct_sampler_fn: Direct sampler function
     """
-    return full_chain_iteration(keys, chain_states, block_means, block_covs, coupled_blocks,
+    return full_chain_iteration(keys, chain_states, block_means, block_covs, coupled_blocks, block_modes,
                                 block_arrays,
                                 log_post_fn, grad_log_post_fn, direct_sampler_fn)

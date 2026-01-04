@@ -22,10 +22,11 @@ NUGGET = 1e-5
 def compute_block_statistics(
     coupled_states: jnp.ndarray,
     block_indices: jnp.ndarray,
-    block_masks: jnp.ndarray
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    block_masks: jnp.ndarray,
+    log_post_fn=None
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """
-    Precompute mean and covariance for all blocks from coupled states.
+    Precompute mean, covariance, and mode for all blocks from coupled states.
 
     This is called ONCE before vmapping across chains, avoiding redundant computation.
 
@@ -33,11 +34,15 @@ def compute_block_statistics(
         coupled_states: States from opposite group (n_chains, n_params)
         block_indices: Block index array (n_blocks, max_block_size)
         block_masks: Parameter masks (n_blocks, max_block_size)
+        log_post_fn: Optional log posterior function for computing mode.
+                     If provided, evaluates log posterior for each coupled chain
+                     to find the mode (chain with highest density).
 
     Returns:
         block_means: (n_blocks, max_block_size)
         block_covs: (n_blocks, max_block_size, max_block_size)
         coupled_blocks: (n_blocks, n_chains, max_block_size) - raw data for multinomial
+        block_modes: (n_blocks, max_block_size) - mode chain values for each block
     """
     def get_stats_for_one_block(b_indices, b_mask):
         safe_indices = jnp.clip(b_indices, 0, coupled_states.shape[1] - 1)
@@ -60,7 +65,30 @@ def compute_block_statistics(
         return mean, final_cov, block_data
 
     means, covs, coupled_blocks = jax.vmap(get_stats_for_one_block)(block_indices, block_masks)
-    return means, covs, coupled_blocks
+
+    # Compute mode: find chain with highest log posterior
+    if log_post_fn is not None:
+        # Evaluate full log posterior for each coupled chain
+        # Use a dummy "all parameters" index for full evaluation
+        all_indices = jnp.arange(coupled_states.shape[1])
+        coupled_log_posts = jax.vmap(lambda s: log_post_fn(s, all_indices))(coupled_states)
+
+        # Find mode chain (highest log posterior)
+        mode_idx = jnp.argmax(coupled_log_posts)
+        mode_state = coupled_states[mode_idx]
+
+        # Extract mode values for each block
+        def get_mode_for_block(b_indices, b_mask):
+            safe_indices = jnp.clip(b_indices, 0, mode_state.shape[0] - 1)
+            mode_block = jnp.take(mode_state, safe_indices) * b_mask
+            return mode_block
+
+        block_modes = jax.vmap(get_mode_for_block)(block_indices, block_masks)
+    else:
+        # If no log_post_fn, use mean as fallback for mode
+        block_modes = means
+
+    return means, covs, coupled_blocks, block_modes
 
 
 def _save_with_gq(states_A, states_B, gq_fn, num_gq):
@@ -84,25 +112,26 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
     states_A, keys_A, states_B, keys_B, history_array, lik_history_array, acceptance_counts, current_iteration = carry
 
     # Precompute block statistics ONCE from states_B (for updating A)
-    means_A, covs_A, coupled_blocks_A = compute_block_statistics(
-        states_B, block_arrays.indices, block_arrays.masks
+    # Pass log_post_fn to compute mode for MODE_WEIGHTED proposals
+    means_A, covs_A, coupled_blocks_A, modes_A = compute_block_statistics(
+        states_B, block_arrays.indices, block_arrays.masks, log_post_fn
     )
 
     # Update Group A
     next_states_A, next_keys_A, lps_A, accepts_A = parallel_gibbs_iteration(
-        keys_A, states_A, means_A, covs_A, coupled_blocks_A,
+        keys_A, states_A, means_A, covs_A, coupled_blocks_A, modes_A,
         block_arrays,
         log_post_fn, grad_log_post_fn, direct_sampler_fn
     )
 
     # Precompute block statistics ONCE from updated states_A (for updating B)
-    means_B, covs_B, coupled_blocks_B = compute_block_statistics(
-        next_states_A, block_arrays.indices, block_arrays.masks
+    means_B, covs_B, coupled_blocks_B, modes_B = compute_block_statistics(
+        next_states_A, block_arrays.indices, block_arrays.masks, log_post_fn
     )
 
     # Update Group B
     next_states_B, next_keys_B, lps_B, accepts_B = parallel_gibbs_iteration(
-        keys_B, states_B, means_B, covs_B, coupled_blocks_B,
+        keys_B, states_B, means_B, covs_B, coupled_blocks_B, modes_B,
         block_arrays,
         log_post_fn, grad_log_post_fn, direct_sampler_fn
     )

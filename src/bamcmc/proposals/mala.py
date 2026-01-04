@@ -39,7 +39,7 @@ def mala_proposal(operand):
 
     Args:
         operand: Tuple of (key, current_block, step_mean, step_cov,
-                          coupled_blocks, block_mask, settings, grad_fn)
+                          coupled_blocks, block_mask, settings, grad_fn, block_mode)
             key: JAX random key
             current_block: Current parameter values (block_size,)
             step_mean: Precomputed mean (unused by MALA)
@@ -53,13 +53,15 @@ def mala_proposal(operand):
                             Same interface as MIXTURE and SELF_MEAN
             grad_fn: Function that takes block values and returns gradient
                      of log posterior w.r.t. those values
+            block_mode: Mode chain values (unused by MALA)
 
     Returns:
         proposal: Proposed parameter values
         log_hastings_ratio: Log density ratio for MH acceptance
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn = operand
+    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn, block_mode = operand
+    del block_mode  # Unused by this proposal
     new_key, proposal_key = random.split(key)
 
     # Use cov_mult for consistent interface with other proposals

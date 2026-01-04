@@ -67,6 +67,7 @@ class ProposalType(IntEnum):
     MALA = 4           # Metropolis-adjusted Langevin (gradient-based, preconditioned)
     MEAN_MALA = 5      # Chain-mean MALA: gradient at coupled mean, independent proposal
     MEAN_WEIGHTED = 6  # Adaptive interpolation between self_mean and chain_mean
+    MODE_WEIGHTED = 7  # Adaptive interpolation toward mode (highest log posterior chain)
 
     # Future proposals - add new enum values here, implement in proposals.py
     # ADAPTIVE = 7       # Adaptive covariance during burn-in

@@ -37,6 +37,7 @@ from .multinomial import multinomial_proposal
 from .mala import mala_proposal
 from .mean_mala import mean_mala_proposal
 from .mean_weighted import mean_weighted_proposal
+from .mode_weighted import mode_weighted_proposal
 
 __all__ = [
     'self_mean_proposal',
@@ -46,4 +47,5 @@ __all__ = [
     'mala_proposal',
     'mean_mala_proposal',
     'mean_weighted_proposal',
+    'mode_weighted_proposal',
 ]

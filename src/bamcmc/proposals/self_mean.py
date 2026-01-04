@@ -19,7 +19,7 @@ def self_mean_proposal(operand):
     where Σ is precomputed from coupled_blocks.
 
     Args:
-        operand: Tuple of (key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn)
+        operand: Tuple of (key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn, block_mode)
             key: JAX random key
             current_block: Current parameter values (block_size,)
             step_mean: Precomputed mean (unused for self-mean)
@@ -29,14 +29,15 @@ def self_mean_proposal(operand):
             settings: JAX array of settings
                 [COV_MULT] - covariance multiplier (default 1.0)
             grad_fn: Gradient function (unused by self-mean)
+            block_mode: Mode chain values (unused by self-mean)
 
     Returns:
         proposal: Proposed parameter values
         log_hastings_ratio: 0.0 (symmetric proposal)
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn = operand
-    del grad_fn  # Unused by this proposal
+    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn, block_mode = operand
+    del grad_fn, block_mode  # Unused by this proposal
     new_key, proposal_key = random.split(key)
 
     cov_mult = settings[SettingSlot.COV_MULT]

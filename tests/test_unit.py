@@ -313,9 +313,10 @@ class TestMixtureProposal:
         current_block = jnp.array([1.0, 2.0])
         coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([0.0, 0.0]), 0.1)
         block_mask = jnp.array([1.0, 1.0])
+        block_mode = step_mean  # Dummy mode for testing
 
         operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                   make_settings_array(chain_prob=0.5), dummy_grad_fn)
+                   make_settings_array(chain_prob=0.5), dummy_grad_fn, block_mode)
         proposal, log_ratio, new_key = mixture_proposal(operand)
 
         assert proposal.shape == (2,)
@@ -328,12 +329,13 @@ class TestMixtureProposal:
         current_block = jnp.array([1.0, 2.0])
         coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([10.0, 10.0]), 0.1)
         block_mask = jnp.array([1.0, 1.0])
+        block_mode = step_mean  # Dummy mode for testing
 
         proposals = []
         for i in range(100):
             key = jax.random.PRNGKey(i)
             operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                       make_settings_array(chain_prob=0.0), dummy_grad_fn)
+                       make_settings_array(chain_prob=0.0), dummy_grad_fn, block_mode)
             prop, _, _ = mixture_proposal(operand)
             proposals.append(prop)
 
@@ -349,12 +351,13 @@ class TestMixtureProposal:
         coupled_mean = jnp.array([10.0, 10.0])
         coupled_blocks, step_mean, step_cov = self._make_coupled_data(coupled_mean, 0.1)
         block_mask = jnp.array([1.0, 1.0])
+        block_mode = step_mean  # Dummy mode for testing
 
         proposals = []
         for i in range(100):
             key = jax.random.PRNGKey(i)
             operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                       make_settings_array(chain_prob=1.0), dummy_grad_fn)
+                       make_settings_array(chain_prob=1.0), dummy_grad_fn, block_mode)
             prop, _, _ = mixture_proposal(operand)
             proposals.append(prop)
 
@@ -370,9 +373,10 @@ class TestMixtureProposal:
         current_block = jnp.array([5.0, 5.0])
         coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([5.0, 5.0]), 0.1)
         block_mask = jnp.array([1.0, 1.0])
+        block_mode = step_mean  # Dummy mode for testing
 
         operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                   make_settings_array(chain_prob=0.5), dummy_grad_fn)
+                   make_settings_array(chain_prob=0.5), dummy_grad_fn, block_mode)
         _, log_ratio, _ = mixture_proposal(operand)
 
         assert jnp.isfinite(log_ratio)
@@ -403,9 +407,10 @@ class TestMultinomialProposal:
         ])
         block_mask = jnp.array([1.0, 1.0])
         step_mean, step_cov = self._make_dummy_stats(2)
+        block_mode = step_mean  # Dummy mode for testing
 
         operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                   make_settings_array(uniform_weight=0.05, n_categories=10), dummy_grad_fn)
+                   make_settings_array(uniform_weight=0.05, n_categories=10), dummy_grad_fn, block_mode)
         proposal, log_ratio, new_key = multinomial_proposal(operand)
 
         assert proposal.shape == (2,)
@@ -421,12 +426,13 @@ class TestMultinomialProposal:
         coupled_blocks = jnp.array([[2.0]] * 10 + [[1.0]] * 2 + [[3.0]] * 1)
         block_mask = jnp.array([1.0])
         step_mean, step_cov = self._make_dummy_stats(1)
+        block_mode = step_mean  # Dummy mode for testing
 
         proposals = []
         for i in range(200):
             key = jax.random.PRNGKey(i)
             operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                       make_settings_array(uniform_weight=0.01, n_categories=10), dummy_grad_fn)
+                       make_settings_array(uniform_weight=0.01, n_categories=10), dummy_grad_fn, block_mode)
             prop, _, _ = multinomial_proposal(operand)
             proposals.append(float(prop[0]))
 
@@ -443,9 +449,10 @@ class TestMultinomialProposal:
         coupled_blocks = jnp.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
         block_mask = jnp.array([1.0])
         step_mean, step_cov = self._make_dummy_stats(1)
+        block_mode = step_mean  # Dummy mode for testing
 
         operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
-                   make_settings_array(uniform_weight=0.05, n_categories=5), dummy_grad_fn)
+                   make_settings_array(uniform_weight=0.05, n_categories=5), dummy_grad_fn, block_mode)
         _, log_ratio, _ = multinomial_proposal(operand)
 
         assert jnp.isfinite(log_ratio)
