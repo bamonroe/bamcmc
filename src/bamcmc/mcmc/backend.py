@@ -235,7 +235,7 @@ def _run_mcmc_iterations(
     print_acceptance_summary(block_specs, acceptance_rates_host)
 
     print(f"\n--- MCMC Run Summary ---")
-    print(f"  Total Wall Time: {wall_time:.4f} s")
+    print(f"  Total Wall Time: {timedelta(seconds=int(wall_time))} ({wall_time:.2f}s)")
 
     return current_carry, wall_time
 
