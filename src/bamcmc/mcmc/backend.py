@@ -431,7 +431,8 @@ def rmcmc_single(
     posterior_hash = get_posterior_hash(
         posterior_id,
         model_ctx['model_config'],
-        runtime_ctx['data']
+        runtime_ctx['data'],
+        user_config['num_chains']
     )
     benchmark_mgr = get_benchmark_manager()
     cached_benchmark = benchmark_mgr.get_cached_benchmark(posterior_hash)

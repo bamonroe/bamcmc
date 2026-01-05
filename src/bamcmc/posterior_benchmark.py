@@ -81,7 +81,7 @@ def get_data_hash(data: Dict) -> str:
     return hasher.hexdigest()[:16]
 
 
-def get_posterior_hash(posterior_id: str, model_config: Dict, data: Dict) -> str:
+def get_posterior_hash(posterior_id: str, model_config: Dict, data: Dict, num_chains: int = None) -> str:
     """
     Compute a unique hash for a posterior configuration.
 
@@ -89,13 +89,15 @@ def get_posterior_hash(posterior_id: str, model_config: Dict, data: Dict) -> str
     - Posterior ID (name)
     - Source code of all registered functions
     - Data structure (shapes and content)
+    - Number of chains (affects benchmark timing)
 
-    The same posterior code + same data = same hash, guaranteed.
+    The same posterior code + same data + same chains = same hash, guaranteed.
 
     Args:
         posterior_id: The registered name of the posterior
         model_config: The model config dict from the registry
         data: The data dict with 'static', 'int', 'float' keys
+        num_chains: Number of MCMC chains (included in hash for benchmark accuracy)
 
     Returns:
         16-character hex hash that uniquely identifies this configuration
@@ -104,6 +106,10 @@ def get_posterior_hash(posterior_id: str, model_config: Dict, data: Dict) -> str
 
     # Posterior identifier
     hasher.update(f"posterior_id:{posterior_id}".encode())
+
+    # Number of chains (important for benchmark timing)
+    if num_chains is not None:
+        hasher.update(f"num_chains:{num_chains}".encode())
 
     # Hash each registered function's source code
     function_keys = [
@@ -612,13 +618,13 @@ def get_manager(cache_dir: Optional[str] = None) -> PosteriorBenchmarkManager:
     return PosteriorBenchmarkManager(cache_dir)
 
 
-def compute_posterior_hash(posterior_id: str, model_config: Dict, data: Dict) -> str:
+def compute_posterior_hash(posterior_id: str, model_config: Dict, data: Dict, num_chains: int = None) -> str:
     """
     Convenience function to compute posterior hash.
 
     See get_posterior_hash for details.
     """
-    return get_posterior_hash(posterior_id, model_config, data)
+    return get_posterior_hash(posterior_id, model_config, data, num_chains)
 
 
 # =============================================================================
@@ -670,12 +676,14 @@ def run_benchmark(
     run_params = model_ctx['run_params']
     block_arrays = model_ctx['block_arrays']
 
-    # Compute posterior hash
+    # Compute posterior hash (includes num_chains for accurate benchmark caching)
     posterior_id = user_config['posterior_id']
+    num_chains = user_config['num_chains']
     posterior_hash = get_posterior_hash(
         posterior_id,
         model_ctx['model_config'],
-        runtime_ctx['data']
+        runtime_ctx['data'],
+        num_chains
     )
     print(f"Posterior hash: {posterior_hash}")
 
