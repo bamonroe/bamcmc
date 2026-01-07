@@ -49,6 +49,18 @@ def register_posterior(name, config):
                 direct_sampler: fn(key, chain_state, param_indices, data) -> (state, key)
                     Direct/Gibbs sampler for blocks with SamplerType.DIRECT_CONJUGATE.
 
+                coupled_transform_dispatch: fn(key, chain_state, primary_indices,
+                                              proposed_primary, data) ->
+                                             (coupled_indices, new_coupled, log_jacobian,
+                                              log_prior_ratio, new_key)
+                    For blocks with SamplerType.COUPLED_TRANSFORM. Given proposed primary
+                    parameter values, returns:
+                    - coupled_indices: indices of dependent parameters to transform
+                    - new_coupled: transformed values for coupled parameters
+                    - log_jacobian: log |det J| of the transformation
+                    - log_prior_ratio: log p(new_coupled) - log p(old_coupled)
+                    - new_key: updated random key
+
                 generated_quantities: fn(chain_state, data) -> array
                     Computes derived quantities from chain state.
 

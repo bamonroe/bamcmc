@@ -101,8 +101,8 @@ def _save_with_gq(states_A, states_B, gq_fn, num_gq):
         return full_state
 
 
-def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direct_sampler_fn, gq_fn,
-                           block_arrays: BlockArrays, run_params):
+def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direct_sampler_fn,
+                           coupled_transform_fn, gq_fn, block_arrays: BlockArrays, run_params):
     """
     One iteration of the MCMC scan body.
 
@@ -121,7 +121,7 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
     next_states_A, next_keys_A, lps_A, accepts_A = parallel_gibbs_iteration(
         keys_A, states_A, means_A, covs_A, coupled_blocks_A, modes_A,
         block_arrays,
-        log_post_fn, grad_log_post_fn, direct_sampler_fn
+        log_post_fn, grad_log_post_fn, direct_sampler_fn, coupled_transform_fn
     )
 
     # Precompute block statistics ONCE from updated states_A (for updating B)
@@ -133,7 +133,7 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
     next_states_B, next_keys_B, lps_B, accepts_B = parallel_gibbs_iteration(
         keys_B, states_B, means_B, covs_B, coupled_blocks_B, modes_B,
         block_arrays,
-        log_post_fn, grad_log_post_fn, direct_sampler_fn
+        log_post_fn, grad_log_post_fn, direct_sampler_fn, coupled_transform_fn
     )
 
     combined_accepts = jnp.concatenate([accepts_A, accepts_B], axis=0)

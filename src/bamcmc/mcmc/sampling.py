@@ -207,9 +207,106 @@ def direct_block_step(operand, direct_sampler_fn):
     return new_state, new_key, 0.0, accepted
 
 
+def coupled_transform_step(operand, log_post_fn, coupled_transform_fn, used_proposal_types):
+    """
+    Perform MH step with coupled parameter transformation.
+
+    This step:
+    1. Proposes new values for PRIMARY parameters using standard adaptive proposals
+    2. Calls coupled_transform_fn to get transformed COUPLED parameters
+    3. Computes acceptance ratio including Jacobian and prior corrections
+    4. Accepts or rejects the joint update
+
+    Used for theta-preserving NCP updates where hyperparameters are proposed
+    and epsilon values are deterministically transformed to keep theta constant.
+
+    Args:
+        operand: Tuple of (key, chain_state, block_idx_vec, block_mean, block_cov,
+                          coupled_blocks, block_mode, block_mask, proposal_type, settings)
+        log_post_fn: Log posterior function (for hyperprior evaluation)
+        coupled_transform_fn: Function returning (coupled_indices, new_coupled,
+                                                  log_jacobian, log_prior_ratio, new_key)
+        used_proposal_types: Tuple of ProposalType values for compact dispatch
+
+    Returns:
+        next_state, new_key, chosen_lp, accepted
+    """
+    key, chain_state, block_idx_vec, block_mean, block_cov, coupled_blocks, block_mode, block_mask, proposal_type, settings = operand
+
+    safe_indices = jnp.clip(block_idx_vec, 0, chain_state.shape[0] - 1)
+    current_block_values = jnp.take(chain_state, safe_indices)
+
+    # For coupled transform, we don't use gradients - just standard proposal
+    def dummy_grad_fn(block_values):
+        return jnp.zeros_like(block_values)
+
+    # 1. Generate proposal for PRIMARY parameters using adaptive proposal
+    proposed_block_values, log_proposal_ratio, key = propose_multivariate_block(
+        key, current_block_values, block_mean, block_cov, coupled_blocks,
+        block_mode, block_mask, proposal_type, settings, dummy_grad_fn, used_proposal_types
+    )
+
+    actual_proposal_values = jnp.where(block_mask, proposed_block_values, current_block_values)
+
+    # 2. Call coupled_transform_fn to get transformed coupled parameters
+    # Returns: (coupled_indices, new_coupled, log_jacobian, log_prior_ratio, new_key)
+    coupled_indices, new_coupled, log_jacobian, log_prior_ratio, key = coupled_transform_fn(
+        key, chain_state, block_idx_vec, actual_proposal_values
+    )
+
+    # 3. Build full proposed state with both primary and coupled updates
+    # First, update primary parameters
+    chain_indices = jnp.arange(chain_state.shape[0])
+    matches = (block_idx_vec[None, :] == chain_indices[:, None]) & (block_mask[None, :] > 0)
+    update_needed = jnp.any(matches, axis=1)
+    first_match_idx = jnp.argmax(matches, axis=1)
+    values_from_block = actual_proposal_values[first_match_idx]
+    proposed_state = jnp.where(update_needed, values_from_block, chain_state)
+
+    # Then, update coupled parameters
+    proposed_state = proposed_state.at[coupled_indices].set(new_coupled)
+
+    # 4. Check if proposal contains NaN/Inf - if so, force rejection
+    proposal_is_finite = jnp.all(jnp.isfinite(actual_proposal_values)) & jnp.all(jnp.isfinite(new_coupled))
+
+    # 5. Compute log posterior for PRIMARY params only (hyperprior)
+    # The log_post_fn should return hyperprior for hyperparameter blocks
+    lp_current = log_post_fn(chain_state, block_idx_vec)
+    lp_proposed = log_post_fn(proposed_state, block_idx_vec)
+
+    safe_lp_current = jnp.nan_to_num(lp_current, nan=-jnp.inf, posinf=-jnp.inf, neginf=-jnp.inf)
+    safe_lp_proposed = jnp.nan_to_num(lp_proposed, nan=-jnp.inf, posinf=-jnp.inf, neginf=-jnp.inf)
+
+    # 6. Full acceptance ratio:
+    # log_alpha = log_proposal_ratio (from adaptive proposal)
+    #           + log_jacobian (from transform)
+    #           + log_prior_ratio (for coupled params: epsilon prior)
+    #           + (lp_proposed - lp_current) (hyperprior)
+    # Note: likelihood CANCELS for theta-preserving transforms!
+    raw_ratio = (log_proposal_ratio +
+                 log_jacobian +
+                 log_prior_ratio +
+                 safe_lp_proposed - safe_lp_current)
+
+    # Force rejection if proposal contains NaN/Inf
+    safe_ratio = jnp.where(proposal_is_finite,
+                           jnp.nan_to_num(raw_ratio, nan=-jnp.inf),
+                           -jnp.inf)
+
+    new_key, accept_key = random.split(key)
+    log_uniform = jnp.log(random.uniform(accept_key, shape=()))
+
+    accept = log_uniform < safe_ratio
+    next_state = jnp.where(accept, proposed_state, chain_state)
+    chosen_lp = jnp.where(accept, safe_lp_proposed, safe_lp_current)
+    accepted = jnp.float32(accept)
+
+    return next_state, new_key, chosen_lp, accepted
+
+
 def full_chain_iteration(key, chain_state, block_means, block_covs, coupled_blocks, block_modes,
                          block_arrays: BlockArrays,
-                         log_post_fn, grad_log_post_fn, direct_sampler_fn):
+                         log_post_fn, grad_log_post_fn, direct_sampler_fn, coupled_transform_fn):
     """
     Run one full Gibbs iteration over all blocks.
 
@@ -224,12 +321,24 @@ def full_chain_iteration(key, chain_state, block_means, block_covs, coupled_bloc
         log_post_fn: Log posterior function
         grad_log_post_fn: Gradient of log posterior (for MALA proposals)
         direct_sampler_fn: Direct sampler function
+        coupled_transform_fn: Function for COUPLED_TRANSFORM blocks (or None)
     """
     # Pass used_proposal_types to enable compact dispatch (only trace used proposals)
     metro_step = partial(metropolis_block_step, log_post_fn=log_post_fn,
                          grad_log_post_fn=grad_log_post_fn,
                          used_proposal_types=block_arrays.used_proposal_types)
     direct_step = partial(direct_block_step, direct_sampler_fn=direct_sampler_fn)
+
+    # For coupled transform, we need log_post_fn for hyperprior and the transform function
+    # Provide a dummy function if not defined (will never be called for non-COUPLED_TRANSFORM blocks)
+    def dummy_coupled_transform(key, chain_state, primary_indices, proposed_primary):
+        # Return dummy values - this will never be called if no COUPLED_TRANSFORM blocks exist
+        return jnp.array([0]), jnp.array([0.0]), 0.0, 0.0, key
+
+    actual_coupled_fn = coupled_transform_fn if coupled_transform_fn is not None else dummy_coupled_transform
+    coupled_step = partial(coupled_transform_step, log_post_fn=log_post_fn,
+                          coupled_transform_fn=actual_coupled_fn,
+                          used_proposal_types=block_arrays.used_proposal_types)
 
     def scan_body(carry_state, block_i):
         current_state, current_key = carry_state
@@ -244,11 +353,19 @@ def full_chain_iteration(key, chain_state, block_means, block_covs, coupled_bloc
         b_proposal_type = block_arrays.proposal_types[block_i]
         b_settings = block_arrays.settings_matrix[block_i]
 
-        (updated_state, new_key, lp_val, accepted) = jax.lax.cond(
-            b_type == SamplerType.DIRECT_CONJUGATE,
-            direct_step,
-            metro_step,
-            (current_key, current_state, b_indices, b_mean, b_cov, b_coupled, b_mode, b_mask, b_proposal_type, b_settings)
+        operand = (current_key, current_state, b_indices, b_mean, b_cov, b_coupled, b_mode, b_mask, b_proposal_type, b_settings)
+
+        # Dispatch to appropriate sampler based on type
+        # 0=MH, 1=DIRECT, 2=COUPLED_TRANSFORM
+        dispatch_idx = jnp.where(
+            b_type == SamplerType.DIRECT_CONJUGATE, 1,
+            jnp.where(b_type == SamplerType.COUPLED_TRANSFORM, 2, 0)
+        )
+
+        (updated_state, new_key, lp_val, accepted) = jax.lax.switch(
+            dispatch_idx,
+            [metro_step, direct_step, coupled_step],
+            operand
         )
         return (updated_state, new_key), (lp_val, accepted)
 
@@ -260,10 +377,10 @@ def full_chain_iteration(key, chain_state, block_means, block_covs, coupled_bloc
     return final_state, final_key, block_lps, block_accepts
 
 
-@partial(jax.vmap, in_axes=(0, 0, None, None, None, None, None, None, None, None), out_axes=(0, 0, 0, 0))
+@partial(jax.vmap, in_axes=(0, 0, None, None, None, None, None, None, None, None, None), out_axes=(0, 0, 0, 0))
 def parallel_gibbs_iteration(keys, chain_states, block_means, block_covs, coupled_blocks, block_modes,
                              block_arrays: BlockArrays,
-                             log_post_fn, grad_log_post_fn, direct_sampler_fn):
+                             log_post_fn, grad_log_post_fn, direct_sampler_fn, coupled_transform_fn):
     """
     Run Gibbs iteration for all chains in parallel.
 
@@ -278,7 +395,8 @@ def parallel_gibbs_iteration(keys, chain_states, block_means, block_covs, couple
         log_post_fn: Log posterior function
         grad_log_post_fn: Gradient of log posterior (for MALA proposals)
         direct_sampler_fn: Direct sampler function
+        coupled_transform_fn: Function for COUPLED_TRANSFORM blocks (or None)
     """
     return full_chain_iteration(keys, chain_states, block_means, block_covs, coupled_blocks, block_modes,
                                 block_arrays,
-                                log_post_fn, grad_log_post_fn, direct_sampler_fn)
+                                log_post_fn, grad_log_post_fn, direct_sampler_fn, coupled_transform_fn)

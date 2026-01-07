@@ -187,6 +187,13 @@ def configure_mcmc_system(
     log_posterior_fn = partial(model_config['log_posterior'], data=data_jax)
     direct_sampler_fn = partial(model_config['direct_sampler'], data=data_jax)
 
+    # Get coupled transform dispatch if defined (for COUPLED_TRANSFORM blocks)
+    coupled_transform_fn = None
+    if model_config.get('coupled_transform_dispatch'):
+        coupled_transform_fn = partial(
+            model_config['coupled_transform_dispatch'], data=data_jax
+        )
+
     init_vec_fn = model_config.get('initial_vector')
     if init_vec_fn:
         initial_vector_fn = partial(init_vec_fn, data=data)  # Use original data for init
@@ -228,6 +235,7 @@ def configure_mcmc_system(
     model_context = {
         'log_posterior_fn': log_posterior_fn,
         'direct_sampler_fn': direct_sampler_fn,
+        'coupled_transform_fn': coupled_transform_fn,  # For COUPLED_TRANSFORM blocks
         'initial_vector_fn': initial_vector_fn,
         'generated_quantities_fn': gq_fn,
         'block_arrays': block_arrays,

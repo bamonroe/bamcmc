@@ -30,14 +30,15 @@ class SamplerType(IntEnum):
     # Core samplers (currently implemented)
     METROPOLIS_HASTINGS = 0  # Standard MH with proposal distribution
     DIRECT_CONJUGATE = 1     # Direct sampling from conditional (e.g., Gibbs)
+    COUPLED_TRANSFORM = 2    # MH with deterministic coupled parameter updates
 
     # Future samplers (reserved for implementation)
-    ADAPTIVE_MH = 2          # MH with adaptive covariance tuning
-    HMC = 3                  # Hamiltonian Monte Carlo
-    NUTS = 4                 # No-U-Turn Sampler
-    ELLIPTICAL_SLICE = 5     # For Gaussian priors
-    SLICE_SAMPLER = 6        # Slice sampling
-    DELAYED_ACCEPTANCE = 7   # Two-stage MH for expensive likelihoods
+    ADAPTIVE_MH = 3          # MH with adaptive covariance tuning
+    HMC = 4                  # Hamiltonian Monte Carlo
+    NUTS = 5                 # No-U-Turn Sampler
+    ELLIPTICAL_SLICE = 6     # For Gaussian priors
+    SLICE_SAMPLER = 7        # Slice sampling
+    DELAYED_ACCEPTANCE = 8   # Two-stage MH for expensive likelihoods
 
     def __str__(self):
         return self.name.replace('_', ' ').title()
@@ -92,7 +93,7 @@ class BlockSpec:
 
     Required fields:
         size: Number of parameters in this block
-        sampler_type: How to sample this block (MH, direct, etc.)
+        sampler_type: How to sample this block (MH, direct, coupled_transform, etc.)
 
     Optional fields:
         proposal_type: For MH samplers, which proposal strategy to use
@@ -100,6 +101,14 @@ class BlockSpec:
         label: Human-readable name for debugging/logging
         settings: Dict of sampler-specific settings
         metadata: Additional info (not used by sampler, for user reference)
+
+    For COUPLED_TRANSFORM sampler type (theta-preserving updates):
+        coupled_indices_fn: Function(chain_state, data) -> Array of coupled param indices
+        forward_transform_fn: Function(chain_state, primary_indices, proposed_primary,
+                                       coupled_indices, data) -> new coupled values
+        log_jacobian_fn: Function(chain_state, proposed_state, primary_indices,
+                                  coupled_indices, data) -> log |det J|
+        coupled_log_prior_fn: Function(values) -> log prior for coupled params
 
     Examples:
         # Simple MH block with random walk
@@ -114,9 +123,14 @@ class BlockSpec:
                   direct_sampler_fn=my_conjugate_sampler,
                   label="Hyperparameter: variance")
 
-        # Future: Adaptive MH
-        BlockSpec(size=2, sampler_type=SamplerType.ADAPTIVE_MH,
-                  settings={'adaptation_rate': 0.01, 'adapt_until': 5000})
+        # Coupled transform block (theta-preserving NCP updates)
+        BlockSpec(size=2, sampler_type=SamplerType.COUPLED_TRANSFORM,
+                  proposal_type=ProposalType.MCOV_WEIGHTED_VEC,
+                  coupled_indices_fn=get_epsilon_indices,
+                  forward_transform_fn=theta_preserving_transform,
+                  log_jacobian_fn=compute_jacobian,
+                  coupled_log_prior_fn=epsilon_log_prior,
+                  label="Hyper_r")
     """
     # Required
     size: int
@@ -127,6 +141,12 @@ class BlockSpec:
 
     # Optional - for direct samplers
     direct_sampler_fn: Optional[Callable] = None
+
+    # Optional - for COUPLED_TRANSFORM samplers
+    coupled_indices_fn: Optional[Callable] = None       # (chain_state, data) -> indices
+    forward_transform_fn: Optional[Callable] = None     # Transform coupled params
+    log_jacobian_fn: Optional[Callable] = None          # Log Jacobian of transform
+    coupled_log_prior_fn: Optional[Callable] = None     # Log prior for coupled params
 
     # Optional - metadata
     label: str = ""
@@ -141,6 +161,13 @@ class BlockSpec:
         if not isinstance(self.sampler_type, (SamplerType, int)):
             raise ValueError(f"sampler_type must be SamplerType or int, got {type(self.sampler_type)}")
 
+        # Convert to SamplerType if int was provided (for backward compatibility)
+        if isinstance(self.sampler_type, int):
+            object.__setattr__(self, 'sampler_type', SamplerType(self.sampler_type))
+
+        if self.proposal_type is not None and isinstance(self.proposal_type, int):
+            object.__setattr__(self, 'proposal_type', ProposalType(self.proposal_type))
+
         # Validate sampler-specific requirements
         if self.sampler_type == SamplerType.DIRECT_CONJUGATE:
             if self.direct_sampler_fn is None:
@@ -148,17 +175,27 @@ class BlockSpec:
                     "DIRECT_CONJUGATE sampler requires direct_sampler_fn to be specified"
                 )
 
-        # Convert to SamplerType if int was provided (for backward compatibility)
-        if isinstance(self.sampler_type, int):
-            self.sampler_type = SamplerType(self.sampler_type)
-
-        if self.proposal_type is not None and isinstance(self.proposal_type, int):
-            self.proposal_type = ProposalType(self.proposal_type)
+        # Validate COUPLED_TRANSFORM requirements
+        if self.sampler_type == SamplerType.COUPLED_TRANSFORM:
+            missing = []
+            if self.coupled_indices_fn is None:
+                missing.append("coupled_indices_fn")
+            if self.forward_transform_fn is None:
+                missing.append("forward_transform_fn")
+            if self.log_jacobian_fn is None:
+                missing.append("log_jacobian_fn")
+            if self.coupled_log_prior_fn is None:
+                missing.append("coupled_log_prior_fn")
+            if missing:
+                raise ValueError(
+                    f"COUPLED_TRANSFORM sampler requires: {', '.join(missing)}"
+                )
 
     def is_mh_sampler(self):
         """Check if this block uses a Metropolis-Hastings sampler."""
         return self.sampler_type in [
             SamplerType.METROPOLIS_HASTINGS,
+            SamplerType.COUPLED_TRANSFORM,  # Uses MH accept/reject with transform
             SamplerType.ADAPTIVE_MH,
             SamplerType.HMC,
             SamplerType.NUTS
@@ -224,6 +261,23 @@ def validate_block_specs(specs: List[BlockSpec], model_name: str = "") -> None:
                 errors.append(
                     f"Block {i} ({spec.label or 'unlabeled'}): "
                     f"DIRECT_CONJUGATE requires direct_sampler_fn"
+                )
+
+        # Validate COUPLED_TRANSFORM requirements
+        if spec.sampler_type == SamplerType.COUPLED_TRANSFORM:
+            missing = []
+            if spec.coupled_indices_fn is None:
+                missing.append("coupled_indices_fn")
+            if spec.forward_transform_fn is None:
+                missing.append("forward_transform_fn")
+            if spec.log_jacobian_fn is None:
+                missing.append("log_jacobian_fn")
+            if spec.coupled_log_prior_fn is None:
+                missing.append("coupled_log_prior_fn")
+            if missing:
+                errors.append(
+                    f"Block {i} ({spec.label or 'unlabeled'}): "
+                    f"COUPLED_TRANSFORM requires {', '.join(missing)}"
                 )
 
     if errors:

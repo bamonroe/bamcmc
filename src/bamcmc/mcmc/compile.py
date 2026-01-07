@@ -106,6 +106,7 @@ def _run_mcmc_chunk(carry, data_int, data_float, data_static, block_arrays,
     model_config = get_posterior(posterior_id)
     log_post_fn = model_config['log_posterior']
     direct_sampler_fn = model_config['direct_sampler']
+    coupled_transform_fn = model_config.get('coupled_transform_dispatch')
     gq_fn = model_config.get('generated_quantities')
 
     # Bind data to log_post_fn
@@ -116,6 +117,11 @@ def _run_mcmc_chunk(carry, data_int, data_float, data_static, block_arrays,
     # Gradient is w.r.t. first argument (chain_state)
     grad_log_post_fn = jax.grad(log_post_fn_bound, argnums=0)
 
+    # Bind data to coupled_transform_fn if provided
+    coupled_transform_fn_bound = None
+    if coupled_transform_fn is not None:
+        coupled_transform_fn_bound = partial(coupled_transform_fn, data=data)
+
     # Create scan body with data bound inside trace
     # Using partial inside the traced function makes the data binding
     # part of the trace, not a closure
@@ -124,6 +130,7 @@ def _run_mcmc_chunk(carry, data_int, data_float, data_static, block_arrays,
         log_post_fn=log_post_fn_bound,
         grad_log_post_fn=grad_log_post_fn,
         direct_sampler_fn=partial(direct_sampler_fn, data=data),
+        coupled_transform_fn=coupled_transform_fn_bound,
         gq_fn=partial(gq_fn, data=data) if gq_fn else None,
         block_arrays=block_arrays,
         run_params=run_params
