@@ -176,20 +176,33 @@ class BlockSpec:
                 )
 
         # Validate COUPLED_TRANSFORM requirements
+        # Per-block callbacks are optional if using central coupled_transform_dispatch
+        # The model can register a coupled_transform_dispatch function that handles
+        # all COUPLED_TRANSFORM blocks by inspecting the block label/indices
         if self.sampler_type == SamplerType.COUPLED_TRANSFORM:
-            missing = []
-            if self.coupled_indices_fn is None:
-                missing.append("coupled_indices_fn")
-            if self.forward_transform_fn is None:
-                missing.append("forward_transform_fn")
-            if self.log_jacobian_fn is None:
-                missing.append("log_jacobian_fn")
-            if self.coupled_log_prior_fn is None:
-                missing.append("coupled_log_prior_fn")
-            if missing:
-                raise ValueError(
-                    f"COUPLED_TRANSFORM sampler requires: {', '.join(missing)}"
-                )
+            # If per-block callbacks are provided, require all of them
+            has_per_block = (
+                self.coupled_indices_fn is not None or
+                self.forward_transform_fn is not None or
+                self.log_jacobian_fn is not None or
+                self.coupled_log_prior_fn is not None
+            )
+            if has_per_block:
+                missing = []
+                if self.coupled_indices_fn is None:
+                    missing.append("coupled_indices_fn")
+                if self.forward_transform_fn is None:
+                    missing.append("forward_transform_fn")
+                if self.log_jacobian_fn is None:
+                    missing.append("log_jacobian_fn")
+                if self.coupled_log_prior_fn is None:
+                    missing.append("coupled_log_prior_fn")
+                if missing:
+                    raise ValueError(
+                        f"COUPLED_TRANSFORM with partial per-block callbacks missing: {', '.join(missing)}"
+                    )
+            # If no per-block callbacks, the model must register coupled_transform_dispatch
+            # This is validated at registration time by config.py
 
     def is_mh_sampler(self):
         """Check if this block uses a Metropolis-Hastings sampler."""
@@ -264,21 +277,29 @@ def validate_block_specs(specs: List[BlockSpec], model_name: str = "") -> None:
                 )
 
         # Validate COUPLED_TRANSFORM requirements
+        # Per-block callbacks are optional if using central coupled_transform_dispatch
         if spec.sampler_type == SamplerType.COUPLED_TRANSFORM:
-            missing = []
-            if spec.coupled_indices_fn is None:
-                missing.append("coupled_indices_fn")
-            if spec.forward_transform_fn is None:
-                missing.append("forward_transform_fn")
-            if spec.log_jacobian_fn is None:
-                missing.append("log_jacobian_fn")
-            if spec.coupled_log_prior_fn is None:
-                missing.append("coupled_log_prior_fn")
-            if missing:
-                errors.append(
-                    f"Block {i} ({spec.label or 'unlabeled'}): "
-                    f"COUPLED_TRANSFORM requires {', '.join(missing)}"
-                )
+            has_per_block = (
+                spec.coupled_indices_fn is not None or
+                spec.forward_transform_fn is not None or
+                spec.log_jacobian_fn is not None or
+                spec.coupled_log_prior_fn is not None
+            )
+            if has_per_block:
+                missing = []
+                if spec.coupled_indices_fn is None:
+                    missing.append("coupled_indices_fn")
+                if spec.forward_transform_fn is None:
+                    missing.append("forward_transform_fn")
+                if spec.log_jacobian_fn is None:
+                    missing.append("log_jacobian_fn")
+                if spec.coupled_log_prior_fn is None:
+                    missing.append("coupled_log_prior_fn")
+                if missing:
+                    errors.append(
+                        f"Block {i} ({spec.label or 'unlabeled'}): "
+                        f"COUPLED_TRANSFORM with partial per-block callbacks missing {', '.join(missing)}"
+                    )
 
     if errors:
         prefix = f"Invalid block specs for '{model_name}'" if model_name else "Invalid block specs"

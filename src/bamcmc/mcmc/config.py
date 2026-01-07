@@ -22,7 +22,7 @@ from typing import List, Dict, Tuple, Any
 
 from ..registry import get_posterior
 from .utils import clean_config
-from ..batch_specs import BlockSpec, validate_block_specs, ProposalType
+from ..batch_specs import BlockSpec, validate_block_specs, ProposalType, SamplerType
 from .types import BlockArrays, RunParams, build_block_arrays
 
 
@@ -212,6 +212,19 @@ def configure_mcmc_system(
         raise TypeError(f"Posterior '{posterior_id}' must return BlockSpec objects.")
 
     validate_block_specs(raw_batch_specs, posterior_id)
+
+    # Validate COUPLED_TRANSFORM blocks have required dispatch function
+    has_coupled_transform_blocks = any(
+        spec.sampler_type == SamplerType.COUPLED_TRANSFORM and
+        spec.coupled_indices_fn is None  # No per-block callbacks
+        for spec in raw_batch_specs
+    )
+    if has_coupled_transform_blocks and coupled_transform_fn is None:
+        raise ValueError(
+            f"Posterior '{posterior_id}' has COUPLED_TRANSFORM blocks without per-block "
+            f"callbacks, but no 'coupled_transform_dispatch' function is registered. "
+            f"Either add per-block callbacks to BlockSpec or register coupled_transform_dispatch."
+        )
 
     # Build unified BlockArrays structure
     block_arrays = build_block_arrays(raw_batch_specs)
