@@ -28,6 +28,8 @@ Public API:
         generate_reset_vector - Generate full initial vector with K*M chains
         reset_from_checkpoint - High-level reset from checkpoint file
         print_reset_summary - Print diagnostic info before resetting
+        select_diverse_states - Select K diverse states from checkpoint chains
+        init_from_prior - Initialize posterior from prior-only samples
 
 Example:
     from bamcmc import register_posterior, BlockSpec, SamplerType
@@ -59,12 +61,15 @@ from .checkpoint_helpers import (
     compute_rhat_from_history,
     scan_checkpoints,
     get_latest_checkpoint,
+    clean_model_files,
 )
 from .reset_utils import (
     generate_reset_states,
     generate_reset_vector,
     reset_from_checkpoint,
     print_reset_summary,
+    select_diverse_states,
+    init_from_prior,
 )
 from .posterior_benchmark import (
     PosteriorBenchmarkManager,

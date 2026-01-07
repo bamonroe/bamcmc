@@ -68,10 +68,12 @@ class ProposalType(IntEnum):
     MEAN_MALA = 5      # Chain-mean MALA: gradient at coupled mean, independent proposal
     MEAN_WEIGHTED = 6  # Adaptive interpolation between self_mean and chain_mean
     MODE_WEIGHTED = 7  # Adaptive interpolation toward mode (highest log posterior chain)
+    MCOV_WEIGHTED = 8      # Mean-Cov weighted: covariance scales with distance, affects mean interpolation
+    MCOV_WEIGHTED_VEC = 9  # Vectorized MCOV: per-parameter distance, interpolation, and cov scaling
 
     # Future proposals - add new enum values here, implement in proposals.py
-    # ADAPTIVE = 7       # Adaptive covariance during burn-in
-    # PRECONDITIONED = 8 # Use custom preconditioning matrix
+    # ADAPTIVE = 10       # Adaptive covariance during burn-in
+    # PRECONDITIONED = 11 # Use custom preconditioning matrix
 
     def __str__(self):
         return self.name.replace('_', ' ').title()

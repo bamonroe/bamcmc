@@ -424,3 +424,51 @@ def get_latest_checkpoint(output_dir: str, model_name: str):
     """
     scan = scan_checkpoints(output_dir, model_name)
     return scan['latest_checkpoint']
+
+
+def clean_model_files(output_dir: str, model_name: str, mode: str = 'all'):
+    """
+    Delete checkpoint and history files for a model.
+
+    Args:
+        output_dir: Directory containing the files
+        model_name: Model name prefix
+        mode: Cleaning mode:
+            - 'all': Delete all checkpoints and histories
+            - 'keep_latest': Keep latest checkpoint, delete all else
+
+    Returns:
+        dict with 'deleted_checkpoints', 'deleted_histories', 'kept_checkpoint'
+    """
+    scan = scan_checkpoints(output_dir, model_name)
+
+    deleted_checkpoints = []
+    deleted_histories = []
+    kept_checkpoint = None
+
+    # Determine which checkpoint to keep (if any)
+    if mode == 'keep_latest' and scan['latest_checkpoint']:
+        kept_checkpoint = scan['latest_checkpoint']
+
+    # Delete checkpoints
+    for run_idx, cp_path in scan['checkpoint_files']:
+        if cp_path != kept_checkpoint:
+            try:
+                Path(cp_path).unlink()
+                deleted_checkpoints.append(cp_path)
+            except OSError as e:
+                print(f"  Warning: Could not delete {cp_path}: {e}")
+
+    # Delete all histories
+    for run_idx, hist_path in scan['history_files']:
+        try:
+            Path(hist_path).unlink()
+            deleted_histories.append(hist_path)
+        except OSError as e:
+            print(f"  Warning: Could not delete {hist_path}: {e}")
+
+    return {
+        'deleted_checkpoints': deleted_checkpoints,
+        'deleted_histories': deleted_histories,
+        'kept_checkpoint': kept_checkpoint,
+    }

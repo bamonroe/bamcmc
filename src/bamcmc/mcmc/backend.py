@@ -83,9 +83,10 @@ def _initialize_chains(
     model_ctx: Dict[str, Any],
     run_params: RunParams,
     block_arrays: BlockArrays,
+    init_from: Optional[np.ndarray] = None,
 ) -> Tuple[Any, Dict[str, Any], RunParams]:
     """
-    Initialize chain states from one of three sources.
+    Initialize chain states from one of four sources.
 
     Args:
         resume_from: Path to checkpoint for exact resume
@@ -96,6 +97,7 @@ def _initialize_chains(
         model_ctx: Model context with initial_vector_fn
         run_params: Run parameters (may be modified for resume)
         block_arrays: Block array specifications
+        init_from: Custom initial vector (e.g., from prior samples)
 
     Returns:
         initial_carry: JAX carry tuple for MCMC loop
@@ -103,10 +105,16 @@ def _initialize_chains(
         run_params: Possibly updated with START_ITERATION
 
     Raises:
-        ValueError: If both resume_from and reset_from specified
+        ValueError: If multiple init sources specified
     """
-    if resume_from is not None and reset_from is not None:
-        raise ValueError("Cannot specify both resume_from and reset_from")
+    # Count how many init sources are specified
+    init_sources = sum([
+        resume_from is not None,
+        reset_from is not None,
+        init_from is not None,
+    ])
+    if init_sources > 1:
+        raise ValueError("Cannot specify multiple initialization sources (resume_from, reset_from, init_from)")
 
     if resume_from is not None:
         # --- RESUME MODE: Continue from exact checkpoint state ---
@@ -158,6 +166,19 @@ def _initialize_chains(
         # Reset starts fresh (iteration 0)
         print(f"  Reset complete - starting fresh from iteration 0")
 
+    elif init_from is not None:
+        # --- INIT FROM PRIOR: Use provided initial vector ---
+        print("Using provided initial vector (e.g., from prior samples)...", flush=True)
+
+        initial_carry, user_config = initialize_mcmc_system(
+            init_from,
+            user_config,
+            runtime_ctx,
+            num_gq=run_params.NUM_GQ,
+            num_collect=run_params.NUM_COLLECT,
+            num_blocks=block_arrays.num_blocks
+        )
+
     else:
         # --- FRESH MODE: Generate new initial values ---
         print("Generating initial vector...", flush=True)
@@ -201,7 +222,7 @@ def _run_mcmc_iterations(
     if total_iterations <= 0:
         return initial_carry, 0.0
 
-    print("\n--- MCMC RUN ---")
+    print("\n--- MCMC RUN ---", flush = True)
 
     # Print time estimate if available
     if avg_time:
@@ -376,6 +397,7 @@ def rmcmc_single(
     reset_from: Optional[str] = None,
     reset_noise_scale: float = 1.0,
     save_initial_to: Optional[str] = None,
+    init_from: Optional[np.ndarray] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Run a single MCMC sampling iteration with Unified Nested R-hat support.
@@ -391,6 +413,9 @@ def rmcmc_single(
         reset_from: Optional path to checkpoint file to reset from (cross-chain mean + noise)
         reset_noise_scale: Scale factor for noise when resetting (default 1.0 for full posterior spread)
         save_initial_to: Optional path to save initial state checkpoint (iteration=0) before sampling
+        init_from: Optional numpy array with custom initial values (e.g., from prior samples).
+                   Shape should be (K*M*n_params,) where K=num_superchains, M=subchains_per_super.
+                   Use bamcmc.init_from_prior() to generate this from a prior checkpoint.
 
     Returns:
         results: Dict containing all sampling results:
@@ -408,6 +433,7 @@ def rmcmc_single(
         - resume_from: Continues sampling from exact checkpoint state
         - reset_from: Resets chains to cross-chain mean with small noise, useful for
           rescuing stuck/straggler chains while preserving learned posterior location
+        - init_from: Uses provided array as initial values (e.g., from prior-only run)
         - save_initial_to: Saves the initial chain state before any iterations run,
           useful for tracing chains from their true starting point
     """
@@ -458,6 +484,7 @@ def rmcmc_single(
         model_ctx=model_ctx,
         run_params=run_params,
         block_arrays=block_arrays,
+        init_from=init_from,
     )
 
     print(f"JAX backend: {jax.default_backend()}")
@@ -710,7 +737,7 @@ def rmcmc(
         # Check if this run already completed (output checkpoint exists)
         output_checkpoint_path = f"{output_dir}/{model_name}_checkpoint{output_checkpoint_num}.npz"
         if Path(output_checkpoint_path).exists():
-            print(f"\n--- Sampling run {sampling_run_num} already complete (checkpoint_{output_checkpoint_num} exists), skipping ---")
+            print(f"\n--- Run {i + 1}/{total_runs} (overall #{sampling_run_num + 1}) already complete (checkpoint_{output_checkpoint_num} exists), skipping ---")
             run_log.append({
                 'run_index': sampling_run_num,
                 'mode': 'skipped',
@@ -754,7 +781,7 @@ def rmcmc(
             save_initial_to = f"{output_dir}/{model_name}_checkpoint{input_checkpoint_num}_reset.npz"
 
         print(f"\n{'='*60}")
-        print(f"Sampling run {sampling_run_num + 1}/{total_runs} (mode={actual_mode})")
+        print(f"Sampling run {i + 1}/{total_runs} (overall #{sampling_run_num + 1}, mode={actual_mode})")
         print(f"  Output: checkpoint_{output_checkpoint_num}")
         print(f"{'='*60}")
 
@@ -779,7 +806,7 @@ def rmcmc(
                 save_initial_to=save_initial_to,
             )
         except Exception as e:
-            print(f"\nError during sampling run {sampling_run_num}: {e}")
+            print(f"\nError during run {i + 1}/{total_runs} (overall #{sampling_run_num + 1}): {e}")
             raise
 
         # Save output checkpoint

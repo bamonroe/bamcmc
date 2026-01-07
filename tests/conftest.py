@@ -95,7 +95,7 @@ def register_test_posteriors():
             del _REGISTRY[name]
 
 
-def make_settings_array(chain_prob=None, n_categories=None, cov_mult=None, uniform_weight=None):
+def make_settings_array(chain_prob=None, n_categories=None, cov_mult=None, uniform_weight=None, cov_beta=None):
     """
     Create a settings array for testing proposal functions.
 
@@ -105,6 +105,7 @@ def make_settings_array(chain_prob=None, n_categories=None, cov_mult=None, unifo
         cov_mult: Covariance multiplier for proposal variance (default: 1.0)
             Used by MIXTURE, SELF_MEAN, and MALA proposals.
         uniform_weight: Weight of uniform distribution in multinomial proposal (default: 0.4)
+        cov_beta: Covariance scaling strength for MCOV_WEIGHTED proposal (default: 1.0)
 
     Returns:
         JAX array of shape (MAX_SETTINGS,) with specified values
@@ -120,6 +121,8 @@ def make_settings_array(chain_prob=None, n_categories=None, cov_mult=None, unifo
         settings[SettingSlot.COV_MULT] = cov_mult
     if uniform_weight is not None:
         settings[SettingSlot.UNIFORM_WEIGHT] = uniform_weight
+    if cov_beta is not None:
+        settings[SettingSlot.COV_BETA] = cov_beta
     return jnp.array(settings)
 
 

@@ -24,6 +24,8 @@ from ..proposals import (
     mean_mala_proposal,
     mean_weighted_proposal,
     mode_weighted_proposal,
+    mcov_weighted_proposal,
+    mcov_weighted_vec_proposal,
 )
 from .types import BlockArrays
 
@@ -39,6 +41,8 @@ PROPOSAL_REGISTRY = {
     int(ProposalType.MEAN_MALA): mean_mala_proposal,
     int(ProposalType.MEAN_WEIGHTED): mean_weighted_proposal,
     int(ProposalType.MODE_WEIGHTED): mode_weighted_proposal,
+    int(ProposalType.MCOV_WEIGHTED): mcov_weighted_proposal,
+    int(ProposalType.MCOV_WEIGHTED_VEC): mcov_weighted_vec_proposal,
 }
 
 

@@ -58,7 +58,12 @@ bamcmc/
 │   │   ├── chain_mean.py     # Independent proposal
 │   │   ├── mixture.py        # Mixture of self/chain mean
 │   │   ├── multinomial.py    # Discrete parameter proposal
-│   │   └── mala.py           # MALA (gradient-based) proposal
+│   │   ├── mala.py           # MALA (gradient-based) proposal
+    │   │   ├── mean_mala.py      # MEAN_MALA: gradient at coupled mean
+    │   │   ├── mean_weighted.py  # MEAN_WEIGHTED: adaptive interpolation
+    │   │   ├── mode_weighted.py  # MODE_WEIGHTED: interpolation toward mode
+    │   │   ├── mcov_weighted.py      # MCOV_WEIGHTED: covariance-scaled interpolation
+    │   │   └── mcov_weighted_vec.py  # MCOV_WEIGHTED_VEC: vectorized per-param MCOV
 │   ├── batch_specs.py        # BlockSpec, SamplerType, ProposalType
 │   ├── registry.py           # Posterior registration system
 │   ├── settings.py           # Per-block settings (SettingSlot)
@@ -122,6 +127,11 @@ BlockSpec(
 - `MIXTURE` (2): With probability alpha use CHAIN_MEAN, else SELF_MEAN
 - `MULTINOMIAL` (3): For discrete parameters on integer grid
 - `MALA` (4): Metropolis-adjusted Langevin (gradient-based, preconditioned)
+- `MEAN_MALA` (5): MALA with gradient computed at coupled mean (independent proposal)
+- `MEAN_WEIGHTED` (6): Adaptive interpolation between self and chain mean based on Mahalanobis distance
+- `MODE_WEIGHTED` (7): Interpolation toward the mode (highest log-posterior chain)
+- `MCOV_WEIGHTED` (8): Mean-covariance weighted interpolation with configurable blend
+- `MCOV_WEIGHTED_VEC` (9): Vectorized MCOV with per-parameter distance and interpolation
 
 ### 3. Data Format
 
@@ -224,12 +234,12 @@ class RunParams:
 
 ## Main Entry Points
 
-### rmcmc() - Full Sampling
+### rmcmc_single() - Single-Run Sampling
 
 ```python
-from bamcmc.mcmc_backend import rmcmc
+from bamcmc import rmcmc_single  # Or: from bamcmc.mcmc.backend import rmcmc_single
 
-results, checkpoint = rmcmc(
+results, checkpoint = rmcmc_single(
     mcmc_config,
     data,
     calculate_rhat=True,
@@ -252,10 +262,33 @@ results, checkpoint = rmcmc(
 # checkpoint dict for saving/resuming
 ```
 
+### rmcmc() - Multi-Run Sampling
+
+```python
+from bamcmc import rmcmc  # Or: from bamcmc.mcmc.backend import rmcmc
+
+summary = rmcmc(
+    mcmc_config,
+    data,
+    output_dir='./output',
+    run_schedule=[("reset", 3), ("resume", 5)],  # 3 reset runs, then 5 resume runs
+    calculate_rhat=True,
+    burn_in_fresh=True,    # Only burn-in on fresh/reset runs
+    reset_noise_scale=0.1,
+)
+
+# summary dict containing:
+#   - history_files: List of (run_idx, filepath) tuples
+#   - checkpoint_files: List of checkpoint filepaths
+#   - run_log: List of dicts with per-run details
+#   - final_iteration: Iteration after all runs
+#   - total_runs_completed: Number of runs completed
+```
+
 ### run_benchmark() - Performance Testing
 
 ```python
-from bamcmc.mcmc_backend import run_benchmark
+from bamcmc.posterior_benchmark import run_benchmark
 
 results = run_benchmark(
     mcmc_config,

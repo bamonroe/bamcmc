@@ -55,6 +55,14 @@ def register_posterior(name, config):
                 get_num_gq: fn(mcmc_config, data) -> int
                     Returns number of generated quantities.
 
+                get_special_param_indices: fn(n_subjects) -> dict
+                    Returns indices of parameters needing special handling during reset.
+                    Dict should contain:
+                        'z_indices': list of discrete model indicator indices
+                        'pi_indices': list of mixing weight indices (simplex)
+                        'r_indices': list of r parameter indices (natural scale)
+                    Used by reset_utils to properly handle discrete/constrained params.
+
     Raises:
         ValueError: If required keys are missing or name is already registered.
 

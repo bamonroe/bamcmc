@@ -31,9 +31,10 @@ class SettingSlot(IntEnum):
     N_CATEGORIES = 1    # Number of categories for MULTINOMIAL proposal
     COV_MULT = 2        # Covariance multiplier for proposal variance (used by MIXTURE, SELF_MEAN, MALA)
     UNIFORM_WEIGHT = 3  # Weight of uniform distribution in MULTINOMIAL proposal (0-1)
+    COV_BETA = 4        # Covariance scaling strength for MCOV_WEIGHTED proposal (0 = no scaling)
     # Future settings:
-    # BOUNDS_LOW = 4
-    # BOUNDS_HIGH = 5
+    # BOUNDS_LOW = 5
+    # BOUNDS_HIGH = 6
 
 
 # Default values for each setting
@@ -42,6 +43,7 @@ SETTING_DEFAULTS = {
     SettingSlot.N_CATEGORIES: 4.0,  # Stored as float for JAX compatibility
     SettingSlot.COV_MULT: 1.0,      # Proposal variance = cov_mult * Σ (no scaling by default)
     SettingSlot.UNIFORM_WEIGHT: 0.4,  # Mix of uniform and empirical for multinomial
+    SettingSlot.COV_BETA: 1.0,      # Covariance scaling: g(d) = 1 + beta*d/(d+k), 0=disabled
 }
 
 # Total number of settings (determines matrix width)
@@ -71,6 +73,7 @@ def build_settings_matrix(specs):
         'n_categories': SettingSlot.N_CATEGORIES,
         'cov_mult': SettingSlot.COV_MULT,
         'uniform_weight': SettingSlot.UNIFORM_WEIGHT,
+        'cov_beta': SettingSlot.COV_BETA,
     }
 
     # Fill in specified values
