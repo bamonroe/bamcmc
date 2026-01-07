@@ -74,7 +74,7 @@ def mcov_weighted_vec_proposal(operand):
     L = jnp.linalg.cholesky(cov_scaled)
 
     # Dimension-dependent constant for interpolation
-    k = 4.0 * jnp.sqrt(ndim)
+    k = 1.0 * jnp.sqrt(ndim)
 
     # === STEP 1: Compute per-parameter whitened distance d1_vec ===
     diff_current = (current_block - step_mean) * block_mask
