@@ -120,6 +120,7 @@ BlockSpec(
 **SamplerType options:**
 - `METROPOLIS_HASTINGS` (0): Standard MH with proposal distribution
 - `DIRECT_CONJUGATE` (1): Direct/Gibbs sampling
+- `COUPLED_TRANSFORM` (2): **Planned** - MH with deterministic coupled parameter updates (see below)
 
 **ProposalType options:**
 - `SELF_MEAN` (0): Random walk centered on current state
@@ -497,3 +498,55 @@ results, checkpoint = rmcmc(config, data, reset_from='checkpoint.npz',
 - **jax** / **jaxlib**: GPU-accelerated array operations
 - **numpy**: Array utilities
 - **scipy** (optional): For integration tests only
+
+---
+
+## Planned Feature: COUPLED_TRANSFORM Sampler Type
+
+### Background
+
+For Non-Centered Parameterization (NCP) in hierarchical models, there's a powerful technique called **theta-preserving updates**. When updating hyperparameters (μ, σ), we simultaneously adjust epsilon values to keep θ = μ + σε constant:
+
+```
+ε' = (θ - μ') / σ' = (μ + σε - μ') / σ'
+```
+
+This makes the **likelihood cancel** from the acceptance ratio, dramatically improving mixing for hyperparameters in NCP models.
+
+### Current Limitation
+
+This technique is currently implemented via `DIRECT_CONJUGATE` with custom direct samplers that use fixed-scale random walk proposals. This bypasses bamcmc's adaptive proposal mechanisms (MCOV_WEIGHTED_VEC).
+
+### Proposed Solution
+
+Add a new `SamplerType.COUPLED_TRANSFORM` that:
+1. Uses adaptive proposals (e.g., MCOV_WEIGHTED_VEC) for primary parameters
+2. Applies deterministic transforms to dependent parameters
+3. Computes Jacobian corrections for the acceptance ratio
+
+### Proposed API
+
+```python
+BlockSpec(
+    size=2,  # (mean, logsd)
+    sampler_type=SamplerType.COUPLED_TRANSFORM,
+    proposal_type=ProposalType.MCOV_WEIGHTED_VEC,  # Adaptive!
+    settings={'cov_mult': 1.0, 'cov_beta': -0.9},
+    label="Hyper_r",
+    coupled_indices_fn=my_coupled_indices,      # Returns indices of dependent params
+    forward_transform_fn=theta_preserving_fn,   # Transform function
+    log_jacobian_fn=jacobian_fn,                # Jacobian correction
+)
+```
+
+### Implementation Status
+
+**Status**: Planned
+
+**Documentation**: `/workspace/code/docs/coupled_sampler_integration_plan.md`
+
+This plan details:
+- Core infrastructure changes (new SamplerType, extended BlockSpec)
+- Modified sampling logic (coupled_transform_step)
+- NCP helper functions (theta_preserving_transform, etc.)
+- Testing and validation approach
