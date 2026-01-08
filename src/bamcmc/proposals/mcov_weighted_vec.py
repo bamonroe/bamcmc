@@ -12,21 +12,34 @@ Key difference from MCOV_WEIGHTED:
     - Parameters far from their marginal mean stay closer to current value
     - Parameters near their marginal mean get pulled toward coupled mean
 
+Design goals:
+    1. At equilibrium (near coupled mean): behave like CHAIN_MEAN proposal
+       for fast mixing - alpha ≈ 0, g ≈ 1
+    2. Far from equilibrium: cautiously track current state to catch up -
+       alpha → 1, g shrinks (with negative beta)
+    3. Higher dimensions should track current state more (jumping is riskier)
+
 Algorithm:
     1. Scale base covariance: Sigma_base = cov_mult * Sigma
     2. Compute whitened difference: y = L^{-1} @ (x - m)
     3. Per-parameter distance: d1_vec = |y|  (element-wise absolute value)
-    4. Per-parameter cov scale: g_vec = 1 + beta * d1_vec / (d1_vec + k)
-    5. Per-parameter metric distance: d2_vec = d1_vec / sqrt(g_vec)
-    6. Per-parameter interpolation: alpha_vec = d2_vec / (d2_vec + k)
-    7. Element-wise proposal mean: mu_prop = alpha_vec * x + (1 - alpha_vec) * m
-    8. Sample with per-param scaling: y ~ N(mu_prop, G @ Sigma_base @ G)
+    4. Dimension-scaled constant: k = c / sqrt(ndim)  [higher dim → smaller k]
+    5. Per-parameter cov scale (quadratic): g_vec = 1 + beta * d1² / (d1² + k²)
+    6. Per-parameter metric distance: d2_vec = d1_vec / sqrt(g_vec)
+    7. Per-parameter interpolation (quadratic): alpha_vec = d2² / (d2² + k²)
+    8. Element-wise proposal mean: mu_prop = alpha_vec * x + (1 - alpha_vec) * m
+    9. Sample with per-param scaling: y ~ N(mu_prop, G @ Sigma_base @ G)
        where G = diag(sqrt(g_vec))
+
+The quadratic formulation ensures alpha and g are flat near d=0, recovering
+CHAIN_MEAN behavior at equilibrium. The inverted k scaling makes higher
+dimensional blocks more conservative (larger alpha for same distance).
 
 Parameters:
     - COV_MULT: Base step size multiplier (scalar)
-    - COV_BETA: Covariance scaling strength (scalar). beta=0 reduces to
-      element-wise MEAN_WEIGHTED.
+    - COV_BETA: Covariance scaling strength (scalar). Negative values shrink
+      variance when far from mean (aids catching up). beta=0 reduces to
+      quadratic MEAN_WEIGHTED.
 """
 
 import jax
@@ -73,25 +86,32 @@ def mcov_weighted_vec_proposal(operand):
     # Cholesky decomposition
     L = jnp.linalg.cholesky(cov_scaled)
 
-    # Dimension-dependent constant for interpolation
-    k = 1.0 * jnp.sqrt(ndim)
+    # Dimension-dependent constant for interpolation (inverted scaling)
+    # Higher dimensions -> smaller k -> larger alpha (more conservative)
+    k = 2.0 / jnp.sqrt(jnp.maximum(ndim, 1.0))
+    k_sq = k * k
 
     # === STEP 1: Compute per-parameter whitened distance d1_vec ===
     diff_current = (current_block - step_mean) * block_mask
     y_current = jax.scipy.linalg.solve_triangular(L, diff_current, lower=True)
     d1_vec_current = jnp.abs(y_current)  # Per-parameter distance
+    d1_sq_current = d1_vec_current * d1_vec_current
 
-    # === STEP 2: Per-parameter covariance scale g_vec ===
-    # g_i = 1 + beta * d_i / (d_i + k)
-    g_vec_current = 1.0 + cov_beta * d1_vec_current / (d1_vec_current + k + 1e-10)
+    # === STEP 2: Per-parameter covariance scale g_vec (quadratic) ===
+    # g_i = 1 + beta * d1_i^2 / (d1_i^2 + k^2)
+    # Quadratic ensures g is flat near d=0 (chain_mean-like at equilibrium)
+    g_vec_current = 1.0 + cov_beta * d1_sq_current / (d1_sq_current + k_sq + 1e-10)
 
     # === STEP 3: Per-parameter distance in weighted metric ===
     # d2_i = d1_i / sqrt(g_i)
     sqrt_g_current = jnp.sqrt(jnp.maximum(g_vec_current, 1e-10))
     d2_vec_current = d1_vec_current / sqrt_g_current
+    d2_sq_current = d2_vec_current * d2_vec_current
 
-    # === STEP 4: Per-parameter alpha ===
-    alpha_vec_current = d2_vec_current / (d2_vec_current + k + 1e-10)
+    # === STEP 4: Per-parameter alpha (quadratic) ===
+    # alpha_i = d2_i^2 / (d2_i^2 + k^2)
+    # Quadratic ensures alpha is flat near d=0 (chain_mean-like at equilibrium)
+    alpha_vec_current = d2_sq_current / (d2_sq_current + k_sq + 1e-10)
 
     # === STEP 5: Element-wise proposal mean ===
     prop_mean_current = alpha_vec_current * current_block + (1.0 - alpha_vec_current) * step_mean
@@ -108,11 +128,16 @@ def mcov_weighted_vec_proposal(operand):
     diff_proposal = (proposal - step_mean) * block_mask
     y_proposal = jax.scipy.linalg.solve_triangular(L, diff_proposal, lower=True)
     d1_vec_proposal = jnp.abs(y_proposal)
+    d1_sq_proposal = d1_vec_proposal * d1_vec_proposal
 
-    g_vec_proposal = 1.0 + cov_beta * d1_vec_proposal / (d1_vec_proposal + k + 1e-10)
+    # Quadratic g for reverse direction
+    g_vec_proposal = 1.0 + cov_beta * d1_sq_proposal / (d1_sq_proposal + k_sq + 1e-10)
     sqrt_g_proposal = jnp.sqrt(jnp.maximum(g_vec_proposal, 1e-10))
     d2_vec_proposal = d1_vec_proposal / sqrt_g_proposal
-    alpha_vec_proposal = d2_vec_proposal / (d2_vec_proposal + k + 1e-10)
+    d2_sq_proposal = d2_vec_proposal * d2_vec_proposal
+
+    # Quadratic alpha for reverse direction
+    alpha_vec_proposal = d2_sq_proposal / (d2_sq_proposal + k_sq + 1e-10)
 
     prop_mean_proposal = alpha_vec_proposal * proposal + (1.0 - alpha_vec_proposal) * step_mean
 

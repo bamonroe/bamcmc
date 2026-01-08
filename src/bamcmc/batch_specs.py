@@ -71,6 +71,7 @@ class ProposalType(IntEnum):
     MODE_WEIGHTED = 7  # Adaptive interpolation toward mode (highest log posterior chain)
     MCOV_WEIGHTED = 8      # Mean-Cov weighted: covariance scales with distance, affects mean interpolation
     MCOV_WEIGHTED_VEC = 9  # Vectorized MCOV: per-parameter distance, interpolation, and cov scaling
+    MCOV_SMOOTH = 10       # Three-zone smoothstep: chain_mean near equilibrium, tracking mid-range, rescue far
 
     # Future proposals - add new enum values here, implement in proposals.py
     # ADAPTIVE = 10       # Adaptive covariance during burn-in

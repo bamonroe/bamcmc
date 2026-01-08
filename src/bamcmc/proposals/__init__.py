@@ -40,6 +40,7 @@ from .mean_weighted import mean_weighted_proposal
 from .mode_weighted import mode_weighted_proposal
 from .mcov_weighted import mcov_weighted_proposal
 from .mcov_weighted_vec import mcov_weighted_vec_proposal
+from .mcov_smooth import mcov_smooth_proposal
 
 __all__ = [
     'self_mean_proposal',
@@ -52,4 +53,5 @@ __all__ = [
     'mode_weighted_proposal',
     'mcov_weighted_proposal',
     'mcov_weighted_vec_proposal',
+    'mcov_smooth_proposal',
 ]

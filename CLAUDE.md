@@ -120,7 +120,7 @@ BlockSpec(
 **SamplerType options:**
 - `METROPOLIS_HASTINGS` (0): Standard MH with proposal distribution
 - `DIRECT_CONJUGATE` (1): Direct/Gibbs sampling
-- `COUPLED_TRANSFORM` (2): **Planned** - MH with deterministic coupled parameter updates (see below)
+- `COUPLED_TRANSFORM` (2): MH with deterministic coupled parameter transforms (theta-preserving NCP)
 
 **ProposalType options:**
 - `SELF_MEAN` (0): Random walk centered on current state
@@ -501,52 +501,64 @@ results, checkpoint = rmcmc(config, data, reset_from='checkpoint.npz',
 
 ---
 
-## Planned Feature: COUPLED_TRANSFORM Sampler Type
+## COUPLED_TRANSFORM Sampler Type
 
-### Background
+### Overview
 
-For Non-Centered Parameterization (NCP) in hierarchical models, there's a powerful technique called **theta-preserving updates**. When updating hyperparameters (μ, σ), we simultaneously adjust epsilon values to keep θ = μ + σε constant:
+The `COUPLED_TRANSFORM` sampler type enables **theta-preserving updates** for Non-Centered Parameterization (NCP) in hierarchical models. When updating hyperparameters (μ, σ), it simultaneously adjusts epsilon values to keep θ = μ + σε constant:
 
 ```
 ε' = (θ - μ') / σ' = (μ + σε - μ') / σ'
 ```
 
-This makes the **likelihood cancel** from the acceptance ratio, dramatically improving mixing for hyperparameters in NCP models.
+This makes the **likelihood cancel** from the acceptance ratio, achieving ~40-50% acceptance rates for hyperparameters (vs ~1-2% with standard NCP updates).
 
-### Current Limitation
+### Implementation
 
-This technique is currently implemented via `DIRECT_CONJUGATE` with custom direct samplers that use fixed-scale random walk proposals. This bypasses bamcmc's adaptive proposal mechanisms (MCOV_WEIGHTED_VEC).
+**Status**: ✅ Implemented and Working
 
-### Proposed Solution
+**Key Files**:
+- `batch_specs.py`: `SamplerType.COUPLED_TRANSFORM` enum value
+- `mcmc/sampling.py`: `coupled_transform_step()` function
+- Model posteriors implement `coupled_transform_dispatch()` function
 
-Add a new `SamplerType.COUPLED_TRANSFORM` that:
-1. Uses adaptive proposals (e.g., MCOV_WEIGHTED_VEC) for primary parameters
-2. Applies deterministic transforms to dependent parameters
-3. Computes Jacobian corrections for the acceptance ratio
-
-### Proposed API
+### Usage
 
 ```python
+# In batch_type function:
 BlockSpec(
     size=2,  # (mean, logsd)
     sampler_type=SamplerType.COUPLED_TRANSFORM,
     proposal_type=ProposalType.MCOV_WEIGHTED_VEC,  # Adaptive!
     settings={'cov_mult': 1.0, 'cov_beta': -0.9},
     label="Hyper_r",
-    coupled_indices_fn=my_coupled_indices,      # Returns indices of dependent params
-    forward_transform_fn=theta_preserving_fn,   # Transform function
-    log_jacobian_fn=jacobian_fn,                # Jacobian correction
 )
+
+# Register posterior with coupled_transform_dispatch:
+register_posterior('my_ncp_model', {
+    'log_posterior': log_posterior_fn,
+    'batch_type': batch_specs_fn,
+    'initial_vector': initial_vector_fn,
+    'coupled_transform_dispatch': coupled_transform_dispatch_fn,
+})
 ```
 
-### Implementation Status
+### Acceptance Ratio
 
-**Status**: Planned
+The acceptance ratio for COUPLED_TRANSFORM excludes the data likelihood:
 
-**Documentation**: `/workspace/code/docs/coupled_sampler_integration_plan.md`
+```
+log α = log(proposal_ratio)           # From MCOV_WEIGHTED_VEC
+      + N × (log σ - log σ')          # Jacobian correction
+      - 0.5 × Σ[(ε'ᵢ)² - εᵢ²]         # Epsilon prior ratio
+      + log p(μ', σ') - log p(μ, σ)   # Hyperprior ratio
+```
 
-This plan details:
-- Core infrastructure changes (new SamplerType, extended BlockSpec)
-- Modified sampling logic (coupled_transform_step)
-- NCP helper functions (theta_preserving_transform, etc.)
-- Testing and validation approach
+### Example Model
+
+See `/workspace/code/posteriors/mix2_mh_ncp_bhm.py` for a complete implementation.
+
+### Mathematical Documentation
+
+- `/workspace/technical_notes/coupled_transform_sampler.tex` - Complete derivation
+- `/workspace/code/docs/theta_preserving_ncp_sampler.tex` - Pedagogical explanation
