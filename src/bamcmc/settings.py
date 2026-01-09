@@ -32,9 +32,11 @@ class SettingSlot(IntEnum):
     COV_MULT = 2        # Covariance multiplier for proposal variance (used by MIXTURE, SELF_MEAN, MALA)
     UNIFORM_WEIGHT = 3  # Weight of uniform distribution in MULTINOMIAL proposal (0-1)
     COV_BETA = 4        # Covariance scaling strength for MCOV_WEIGHTED proposal (0 = no scaling)
+    K_G = 5             # MCOV_SMOOTH: controls g decay rate (variance shrinks as d increases)
+    K_ALPHA = 6         # MCOV_SMOOTH: controls α rise rate (interpolation toward current state)
     # Future settings:
-    # BOUNDS_LOW = 5
-    # BOUNDS_HIGH = 6
+    # BOUNDS_LOW = 7
+    # BOUNDS_HIGH = 8
 
 
 # Default values for each setting
@@ -44,6 +46,8 @@ SETTING_DEFAULTS = {
     SettingSlot.COV_MULT: 1.0,      # Proposal variance = cov_mult * Σ (no scaling by default)
     SettingSlot.UNIFORM_WEIGHT: 0.4,  # Mix of uniform and empirical for multinomial
     SettingSlot.COV_BETA: 1.0,      # Covariance scaling: g(d) = 1 + beta*d/(d+k), 0=disabled
+    SettingSlot.K_G: 10.0,          # MCOV_SMOOTH: d=10 gives g=0.5 (half-size steps)
+    SettingSlot.K_ALPHA: 3.0,       # MCOV_SMOOTH: d=3 gives α=0.5 (balanced blend)
 }
 
 # Total number of settings (determines matrix width)
@@ -74,6 +78,8 @@ def build_settings_matrix(specs):
         'cov_mult': SettingSlot.COV_MULT,
         'uniform_weight': SettingSlot.UNIFORM_WEIGHT,
         'cov_beta': SettingSlot.COV_BETA,
+        'k_g': SettingSlot.K_G,
+        'k_alpha': SettingSlot.K_ALPHA,
     }
 
     # Fill in specified values

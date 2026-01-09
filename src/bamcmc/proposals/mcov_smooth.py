@@ -35,10 +35,8 @@ Algorithm:
 
 Parameters:
     - COV_MULT: Base step size multiplier (default 1.0)
-
-Tuning constants (hardcoded):
-    - K_G = 10.0 (controls g decay rate per parameter)
-    - K_ALPHA = 3.0 (controls α rise rate per parameter)
+    - K_G: Controls g decay rate per parameter (default 10.0)
+    - K_ALPHA: Controls α rise rate per parameter (default 3.0)
 
 Example behavior per parameter:
     d=0:   α=0.00, g=1.00  (pure chain_mean)
@@ -59,12 +57,8 @@ from ..settings import SettingSlot
 # Regularization for covariance matrix inversion
 COV_NUGGET = 1e-6
 
-# Constants for per-parameter computation (no dimension scaling - each param is 1D)
-K_G = 10.0       # Controls g decay rate
-K_ALPHA = 3.0    # Controls α rise rate
 
-
-def compute_alpha_g_vec(d_vec, block_mask):
+def compute_alpha_g_vec(d_vec, block_mask, k_g, k_alpha):
     """
     Compute per-parameter α and scalar g with smooth transition.
 
@@ -75,13 +69,15 @@ def compute_alpha_g_vec(d_vec, block_mask):
     Args:
         d_vec: Per-parameter distances from coupled mean (vector)
         block_mask: Mask for valid parameters
+        k_g: Controls g decay rate (higher = maintain larger steps further from mean)
+        k_alpha: Controls α rise rate (higher = stay with chain_mean longer)
 
     Returns:
         alpha_vec: Per-parameter interpolation weights (vector)
         g: Scalar variance scaling factor (minimum across valid params)
     """
     # g per parameter: decays from 1 toward 0 as d increases
-    g_vec = 1.0 / (1.0 + (d_vec / K_G) ** 2)
+    g_vec = 1.0 / (1.0 + (d_vec / k_g) ** 2)
 
     # d2 per parameter: distance in proposal metric
     sqrt_g_vec = jnp.sqrt(jnp.maximum(g_vec, 1e-10))
@@ -89,7 +85,7 @@ def compute_alpha_g_vec(d_vec, block_mask):
 
     # α per parameter: rises from 0 toward 1 as d2 increases
     d2_sq = d2_vec ** 2
-    k_alpha_sq = K_ALPHA ** 2
+    k_alpha_sq = k_alpha ** 2
     alpha_vec = d2_sq / (d2_sq + k_alpha_sq + 1e-10)
 
     # Scalar g: use minimum across valid parameters (cautious approach)
@@ -127,6 +123,8 @@ def mcov_smooth_proposal(operand):
     new_key, proposal_key = random.split(key)
 
     cov_mult = settings[SettingSlot.COV_MULT]
+    k_g = settings[SettingSlot.K_G]
+    k_alpha = settings[SettingSlot.K_ALPHA]
 
     # Get dimensions
     ndim = jnp.sum(block_mask)
@@ -146,7 +144,7 @@ def mcov_smooth_proposal(operand):
     d_vec_current = jnp.abs(diff_current) / (sigma_diag + 1e-10)
 
     # === STEP 2: Compute per-param alpha and scalar g for current state ===
-    alpha_vec_current, g_current = compute_alpha_g_vec(d_vec_current, block_mask)
+    alpha_vec_current, g_current = compute_alpha_g_vec(d_vec_current, block_mask, k_g, k_alpha)
     sqrt_g_current = jnp.sqrt(jnp.maximum(g_current, 1e-10))
 
     # === STEP 3: Compute proposal mean (per-parameter interpolation) ===
@@ -163,7 +161,7 @@ def mcov_smooth_proposal(operand):
     diff_proposal = (proposal - step_mean) * block_mask
     d_vec_proposal = jnp.abs(diff_proposal) / (sigma_diag + 1e-10)
 
-    alpha_vec_proposal, g_proposal = compute_alpha_g_vec(d_vec_proposal, block_mask)
+    alpha_vec_proposal, g_proposal = compute_alpha_g_vec(d_vec_proposal, block_mask, k_g, k_alpha)
     sqrt_g_proposal = jnp.sqrt(jnp.maximum(g_proposal, 1e-10))
 
     prop_mean_proposal = alpha_vec_proposal * proposal + (1.0 - alpha_vec_proposal) * step_mean
