@@ -562,3 +562,179 @@ See `/workspace/code/posteriors/mix2_mh_ncp_bhm.py` for a complete implementatio
 
 - `/workspace/technical_notes/coupled_transform_sampler.tex` - Complete derivation
 - `/workspace/code/docs/theta_preserving_ncp_sampler.tex` - Pedagogical explanation
+
+---
+
+## Known Issues & Improvement Suggestions
+
+This section documents known issues and potential improvements identified during code review.
+
+### High Priority
+
+#### 1. Emoji in Error Output (error_handling.py)
+
+**Issue**: Diagnostic output uses emojis (🔴, ⚠️, 📊, ✅) which may not render properly in all terminals and make logs harder to parse programmatically.
+
+**Location**: `src/bamcmc/error_handling.py`
+
+**Suggested Fix**: Replace with text-based indicators:
+```python
+# Current
+print(f"🔴 Chain {i} appears stuck...")
+
+# Suggested
+print(f"[ERROR] Chain {i} appears stuck...")
+```
+
+#### 2. Silent Failure on Unknown Settings Keys (settings.py)
+
+**Issue**: Unknown setting keys are silently ignored. A typo like `'cov_multt'` would silently fail with no warning.
+
+**Location**: `src/bamcmc/settings.py:91`
+
+**Suggested Fix**:
+```python
+for key, value in spec.settings.items():
+    if key in key_to_slot:
+        matrix[i, key_to_slot[key]] = float(value)
+    else:
+        import warnings
+        warnings.warn(f"Unknown setting '{key}' in block '{spec.label or i}', ignoring")
+```
+
+#### 3. Missing Checkpoint Compatibility Validation (checkpoint_helpers.py)
+
+**Issue**: When resuming or resetting from a checkpoint, there's no validation that the checkpoint matches the current model configuration. Mismatched parameter counts cause cryptic errors.
+
+**Location**: `src/bamcmc/checkpoint_helpers.py`
+
+**Suggested Fix**: Add validation before resume/reset:
+```python
+def validate_checkpoint_compatibility(checkpoint, mcmc_config, data):
+    """Validate checkpoint is compatible before resume/reset."""
+    expected_params = compute_expected_params(mcmc_config, data)
+    checkpoint_params = checkpoint['states_A'].shape[1]
+
+    if expected_params != checkpoint_params:
+        raise ValueError(
+            f"Checkpoint has {checkpoint_params} parameters, "
+            f"but model expects {expected_params}"
+        )
+```
+
+### Medium Priority
+
+#### 4. Undocumented Magic Numbers (diagnostics.py)
+
+**Issue**: The nested R-hat threshold uses an undocumented constant.
+
+**Location**: `src/bamcmc/mcmc/diagnostics.py:142`
+
+**Current Code**:
+```python
+tau = 1e-4
+threshold = np.sqrt(1 + 1/M + tau)
+```
+
+**Suggested Fix**: Document the source:
+```python
+# tau: small regularization constant for nested R-hat threshold
+# from Margossian et al. (2022), prevents division instability when M is large
+TAU_NESTED_RHAT = 1e-4
+threshold = np.sqrt(1 + 1/M + TAU_NESTED_RHAT)
+```
+
+#### 5. Missing TypedDict for Data Structure
+
+**Issue**: The `data` dict structure is documented but not typed, making it easy to misuse.
+
+**Suggested Addition** (in `src/bamcmc/mcmc/types.py`):
+```python
+from typing import TypedDict, Tuple
+import numpy as np
+
+class MCMCData(TypedDict):
+    static: Tuple[int, ...]           # Scalars (hashable)
+    int: Tuple[np.ndarray, ...]       # Integer arrays
+    float: Tuple[np.ndarray, ...]     # Float arrays
+```
+
+#### 6. Settings Key Mapping Boilerplate (settings.py)
+
+**Issue**: Adding a new setting requires edits in 3 places (SettingSlot enum, SETTING_DEFAULTS, key_to_slot dict).
+
+**Suggested Fix**: Auto-generate the mapping:
+```python
+class SettingSlot(IntEnum):
+    COV_MULT = 0
+    ALPHA = 1
+    # ... etc
+
+# Auto-generate from enum names (lowercase)
+KEY_TO_SLOT = {slot.name.lower(): slot.value for slot in SettingSlot}
+```
+
+### Lower Priority
+
+#### 7. Missing Dispatch Table Assertion (sampling.py)
+
+**Issue**: The compact proposal dispatch table is built dynamically but not validated.
+
+**Location**: `src/bamcmc/mcmc/sampling.py:88`
+
+**Suggested Fix**:
+```python
+dispatch_table = [
+    (lambda fn: lambda op: fn((*op, grad_fn, block_mode)))(PROPOSAL_REGISTRY[ptype])
+    for ptype in used_proposal_types
+]
+
+assert len(dispatch_table) == len(used_proposal_types), \
+    f"Dispatch table size mismatch: {len(dispatch_table)} vs {len(used_proposal_types)}"
+```
+
+#### 8. Test Coverage Gaps
+
+**Current Gaps**:
+- No explicit tests for proposal Hastings ratio symmetry
+- No tests for checkpoint resume with mismatched data shapes
+- No tests for edge cases: single chain, empty blocks
+- Direct sampler interface not explicitly tested
+- No performance regression tests
+
+**Suggested Additions**:
+```python
+# tests/test_proposals.py
+def test_hastings_ratio_symmetry():
+    """Verify q(y|x) / q(x|y) computed correctly for each proposal."""
+    # Sample x, y, compute ratio both directions, verify consistency
+
+def test_checkpoint_shape_mismatch():
+    """Verify clear error when checkpoint doesn't match model."""
+    # Create checkpoint with N params, try to load with M != N
+```
+
+### Strengths (Don't Change)
+
+The following patterns are well-implemented and should be preserved:
+
+1. **JAX pytree registration** - BlockArrays properly registered for JAX transforms
+2. **Compact proposal dispatch** - Only traces used proposals (memory efficient)
+3. **COUPLED_TRANSFORM implementation** - Theta-preserving sampler is mathematically elegant
+4. **Cross-session compilation caching** - Excellent user experience
+5. **Registry pattern** - Clean plugin architecture for posteriors
+6. **Frozen dataclasses** - Immutability for JAX static args
+7. **Comprehensive docstrings** - Most functions well-documented
+
+### Summary Table
+
+| Priority | Issue | File | Effort | Impact |
+|----------|-------|------|--------|--------|
+| High | Emoji in diagnostics | error_handling.py | Low | Medium |
+| High | Silent unknown settings | settings.py | Low | High |
+| High | Checkpoint compatibility | checkpoint_helpers.py | Medium | High |
+| Medium | Magic number docs | diagnostics.py | Low | Low |
+| Medium | TypedDict for data | types.py | Low | Medium |
+| Medium | Settings auto-mapping | settings.py | Low | Low |
+| Low | Dispatch assertion | sampling.py | Low | Low |
+| Low | Test coverage | tests/ | High | Medium |

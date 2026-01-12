@@ -8,6 +8,7 @@ Run with: pytest tests/test_unit.py -v
 import numpy as np
 import jax.numpy as jnp
 import jax
+import jax.random
 import pytest
 
 from bamcmc.mcmc import compute_nested_rhat
@@ -798,3 +799,293 @@ class TestCheckpointHelpers:
             np.testing.assert_array_equal(loaded['states_A'], states_A)
             np.testing.assert_array_equal(loaded['states_B'], states_B)
             np.testing.assert_array_equal(loaded['acceptance_counts'], acceptance_counts)
+
+
+# ============================================================================
+# EDGE CASE TESTS
+# ============================================================================
+
+class TestEdgeCases:
+    """Test edge cases and boundary conditions."""
+
+    def test_single_block_single_param(self):
+        """Test with a single block containing a single parameter."""
+        batch_specs = [
+            BlockSpec(1, SamplerType.METROPOLIS_HASTINGS, ProposalType.SELF_MEAN)
+        ]
+        result = build_block_arrays(batch_specs, start_idx=0)
+
+        assert result.num_blocks == 1
+        assert result.max_size == 1
+        assert result.total_params == 1
+        assert result.indices.shape == (1, 1)
+
+    def test_many_small_blocks(self):
+        """Test with many small blocks (typical hierarchical model)."""
+        n_subjects = 100
+        batch_specs = [
+            BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.CHAIN_MEAN,
+                     label=f"subject_{i}")
+            for i in range(n_subjects)
+        ]
+        result = build_block_arrays(batch_specs, start_idx=0)
+
+        assert result.num_blocks == n_subjects
+        assert result.total_params == n_subjects * 2
+
+    def test_mixed_block_sizes(self):
+        """Test with varying block sizes."""
+        batch_specs = [
+            BlockSpec(1, SamplerType.METROPOLIS_HASTINGS, ProposalType.SELF_MEAN),
+            BlockSpec(5, SamplerType.METROPOLIS_HASTINGS, ProposalType.CHAIN_MEAN),
+            BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.MIXTURE),
+        ]
+        result = build_block_arrays(batch_specs, start_idx=0)
+
+        assert result.num_blocks == 3
+        assert result.max_size == 5  # Largest block
+        assert result.total_params == 8
+
+    def test_block_with_custom_start_idx(self):
+        """Test that start_idx offsets parameter indices correctly."""
+        batch_specs = [
+            BlockSpec(3, SamplerType.METROPOLIS_HASTINGS, ProposalType.SELF_MEAN)
+        ]
+
+        # Start at index 100
+        result = build_block_arrays(batch_specs, start_idx=100)
+
+        # First valid indices should be 100, 101, 102
+        assert result.indices[0, 0] == 100
+        assert result.indices[0, 1] == 101
+        assert result.indices[0, 2] == 102
+
+    def test_nested_rhat_single_sample(self):
+        """Test R-hat with minimal samples (edge case)."""
+        # With only 2 samples, R-hat should still compute (though unreliable)
+        n_samples = 2
+        K, M = 2, 2
+        history = np.random.randn(n_samples, K * M, 1)
+
+        # Should not crash
+        rhat = compute_nested_rhat(jnp.array(history), K=K, M=M)
+        # Result may be NaN or extreme but should not error
+        assert rhat.shape == (1,)
+
+    def test_nested_rhat_many_chains_few_samples(self):
+        """Test R-hat with many chains but few samples."""
+        n_samples = 10
+        K, M = 50, 1  # 50 chains, no nesting
+        history = np.random.randn(n_samples, K * M, 2)
+
+        rhat = compute_nested_rhat(jnp.array(history), K=K, M=M)
+        assert rhat.shape == (2,)
+
+    def test_validation_rejects_negative_chains(self):
+        """Test that validation catches invalid chain counts."""
+        config = {
+            'posterior_id': 'test',
+            'num_chains_a': -5,  # Invalid!
+            'num_chains_b': 10,
+            'num_superchains': 1,
+        }
+
+        with pytest.raises(ValueError):
+            validate_mcmc_config(config)
+
+    def test_validation_rejects_zero_superchains(self):
+        """Test that validation catches zero superchains."""
+        config = {
+            'posterior_id': 'test',
+            'num_chains_a': 10,
+            'num_chains_b': 10,
+            'num_superchains': 0,  # Invalid!
+        }
+
+        with pytest.raises(ValueError):
+            validate_mcmc_config(config)
+
+
+# ============================================================================
+# DIRECT SAMPLER TESTS
+# ============================================================================
+
+class TestDirectSampler:
+    """Test direct (conjugate) sampler functionality."""
+
+    def test_direct_sampler_block_spec_creation(self):
+        """Test creating a BlockSpec with direct sampler."""
+        def dummy_sampler(key, state, indices):
+            # Simple direct sampler that returns mean of uniform
+            new_val = jax.random.uniform(key, (len(indices),))
+            new_state = state.at[indices].set(new_val)
+            _, new_key = jax.random.split(key)
+            return new_state, new_key
+
+        spec = BlockSpec(
+            size=2,
+            sampler_type=SamplerType.DIRECT_CONJUGATE,
+            direct_sampler_fn=dummy_sampler,
+            label="conjugate_block"
+        )
+
+        assert spec.sampler_type == SamplerType.DIRECT_CONJUGATE
+        assert spec.direct_sampler_fn is not None
+        assert spec.is_direct_sampler()
+        assert not spec.is_mh_sampler()
+
+    def test_direct_sampler_requires_function(self):
+        """Test that DIRECT_CONJUGATE requires direct_sampler_fn."""
+        with pytest.raises(ValueError, match="direct_sampler_fn"):
+            BlockSpec(
+                size=2,
+                sampler_type=SamplerType.DIRECT_CONJUGATE,
+                # Missing direct_sampler_fn!
+            )
+
+    def test_mh_sampler_defaults_proposal_type(self):
+        """Test that MH sampler defaults to SELF_MEAN if proposal_type not specified."""
+        # This should NOT raise - proposal_type defaults to SELF_MEAN
+        spec = BlockSpec(
+            size=2,
+            sampler_type=SamplerType.METROPOLIS_HASTINGS,
+        )
+        assert spec.proposal_type == ProposalType.SELF_MEAN
+
+    def test_build_block_arrays_with_direct_sampler(self):
+        """Test building BlockArrays with mixed sampler types."""
+        def dummy_sampler(key, state, indices):
+            return state, key
+
+        batch_specs = [
+            BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.CHAIN_MEAN),
+            BlockSpec(1, SamplerType.DIRECT_CONJUGATE, direct_sampler_fn=dummy_sampler),
+            BlockSpec(3, SamplerType.METROPOLIS_HASTINGS, ProposalType.SELF_MEAN),
+        ]
+
+        result = build_block_arrays(batch_specs, start_idx=0)
+
+        assert result.num_blocks == 3
+        # Check sampler types are correct
+        assert result.types[0] == SamplerType.METROPOLIS_HASTINGS
+        assert result.types[1] == SamplerType.DIRECT_CONJUGATE
+        assert result.types[2] == SamplerType.METROPOLIS_HASTINGS
+
+
+# ============================================================================
+# COUPLED TRANSFORM SAMPLER TESTS
+# ============================================================================
+
+class TestCoupledTransformSpec:
+    """Test COUPLED_TRANSFORM sampler type specifications."""
+
+    def test_coupled_transform_allows_central_dispatch(self):
+        """Test that COUPLED_TRANSFORM allows no per-block callbacks (uses central dispatch)."""
+        # COUPLED_TRANSFORM can work without per-block callbacks if the model
+        # registers a central coupled_transform_dispatch function
+        spec = BlockSpec(
+            size=2,
+            sampler_type=SamplerType.COUPLED_TRANSFORM,
+            proposal_type=ProposalType.CHAIN_MEAN,
+            label="hyperparameters"
+        )
+        assert spec.sampler_type == SamplerType.COUPLED_TRANSFORM
+
+    def test_coupled_transform_partial_callbacks_raises(self):
+        """Test that partial per-block callbacks raises ValueError."""
+        def dummy_indices(state, data):
+            return jnp.array([0, 1])
+
+        # Providing only some callbacks should raise
+        with pytest.raises(ValueError, match="partial per-block callbacks"):
+            BlockSpec(
+                size=2,
+                sampler_type=SamplerType.COUPLED_TRANSFORM,
+                proposal_type=ProposalType.CHAIN_MEAN,
+                coupled_indices_fn=dummy_indices,
+                # Missing forward_transform_fn, log_jacobian_fn, coupled_log_prior_fn
+            )
+
+    def test_coupled_transform_full_callbacks_valid(self):
+        """Test creating valid COUPLED_TRANSFORM spec with all callbacks."""
+        def dummy_indices(state, data):
+            return jnp.array([10, 11, 12])
+
+        def dummy_transform(state, primary_idx, proposed, coupled_idx, data):
+            return jnp.array([1.0, 2.0, 3.0])
+
+        def dummy_jacobian(state, proposed, primary_idx, coupled_idx, data):
+            return 0.0
+
+        def dummy_prior(values):
+            return -0.5 * jnp.sum(values**2)
+
+        spec = BlockSpec(
+            size=2,
+            sampler_type=SamplerType.COUPLED_TRANSFORM,
+            proposal_type=ProposalType.MCOV_SMOOTH,
+            coupled_indices_fn=dummy_indices,
+            forward_transform_fn=dummy_transform,
+            log_jacobian_fn=dummy_jacobian,
+            coupled_log_prior_fn=dummy_prior,
+            label="hyperparameters"
+        )
+
+        assert spec.sampler_type == SamplerType.COUPLED_TRANSFORM
+        assert spec.proposal_type == ProposalType.MCOV_SMOOTH
+        assert spec.forward_transform_fn is not None
+        assert spec.coupled_indices_fn is not None
+
+    def test_coupled_transform_defaults_proposal_type(self):
+        """Test that COUPLED_TRANSFORM defaults to SELF_MEAN proposal."""
+        spec = BlockSpec(
+            size=2,
+            sampler_type=SamplerType.COUPLED_TRANSFORM,
+        )
+        assert spec.proposal_type == ProposalType.SELF_MEAN
+
+
+# ============================================================================
+# SETTINGS VALIDATION TESTS
+# ============================================================================
+
+class TestSettingsValidation:
+    """Test settings handling and edge cases."""
+
+    def test_default_settings_populated(self):
+        """Test that missing settings get defaults."""
+        batch_specs = [
+            BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.MIXTURE)
+            # No explicit settings - should use defaults
+        ]
+        settings_matrix = build_settings_matrix(batch_specs)
+
+        # Should have default chain_prob
+        assert settings_matrix[0, SettingSlot.CHAIN_PROB] == 0.5  # Default
+
+    def test_custom_settings_override_defaults(self):
+        """Test that custom settings override defaults."""
+        batch_specs = [
+            BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.MIXTURE,
+                     settings={'chain_prob': 0.8, 'cov_mult': 2.0})
+        ]
+        settings_matrix = build_settings_matrix(batch_specs)
+
+        assert settings_matrix[0, SettingSlot.CHAIN_PROB] == 0.8
+        assert settings_matrix[0, SettingSlot.COV_MULT] == 2.0
+
+    def test_multiple_blocks_different_settings(self):
+        """Test that each block can have different settings."""
+        batch_specs = [
+            BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.MIXTURE,
+                     settings={'chain_prob': 0.3}),
+            BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.MIXTURE,
+                     settings={'chain_prob': 0.7}),
+            BlockSpec(2, SamplerType.METROPOLIS_HASTINGS, ProposalType.MIXTURE,
+                     settings={'chain_prob': 0.9}),
+        ]
+        settings_matrix = build_settings_matrix(batch_specs)
+
+        assert settings_matrix[0, SettingSlot.CHAIN_PROB] == 0.3
+        assert settings_matrix[1, SettingSlot.CHAIN_PROB] == 0.7
+        assert settings_matrix[2, SettingSlot.CHAIN_PROB] == 0.9
