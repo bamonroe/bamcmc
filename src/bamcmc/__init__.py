@@ -9,9 +9,12 @@ Public API:
 
     Block Specifications:
         BlockSpec - Dataclass for parameter block configuration
+        ProposalGroup - Dataclass for mixed-proposal sub-groups within a block
         SamplerType - Enum for sampler types (METROPOLIS_HASTINGS, DIRECT_CONJUGATE, etc.)
-        ProposalType - Enum for proposal types (SELF_MEAN, CHAIN_MEAN)
+        ProposalType - Enum for proposal types (SELF_MEAN, CHAIN_MEAN, MULTINOMIAL, etc.)
         create_subject_blocks - Helper to create subject-level blocks
+        create_mixed_subject_blocks - Helper for blocks with mixed proposal types
+        MAX_PROPOSAL_GROUPS - Maximum number of proposal groups per block
 
     Settings:
         SettingSlot - IntEnum for proposal setting indices (ALPHA, N_CATEGORIES, etc.)
@@ -51,7 +54,15 @@ from . import jax_config  # noqa: F401
 from . import mcmc as _mcmc  # noqa: F401
 
 from .registry import register_posterior, get_posterior, list_posteriors
-from .batch_specs import BlockSpec, SamplerType, ProposalType, create_subject_blocks
+from .batch_specs import (
+    BlockSpec,
+    ProposalGroup,
+    SamplerType,
+    ProposalType,
+    create_subject_blocks,
+    create_mixed_subject_blocks,
+    MAX_PROPOSAL_GROUPS,
+)
 from .settings import SettingSlot
 from .checkpoint_helpers import (
     save_checkpoint,

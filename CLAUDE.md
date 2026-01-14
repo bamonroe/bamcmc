@@ -207,15 +207,29 @@ Pre-parsed block specifications for efficient JAX operations:
 ```python
 @dataclass(frozen=True)
 class BlockArrays:
+    # Basic block info
     indices: jnp.ndarray         # (n_blocks, max_size) parameter indices
     types: jnp.ndarray           # (n_blocks,) SamplerType per block
     masks: jnp.ndarray           # (n_blocks, max_size) valid param mask
+
+    # Single-proposal fields (backward compatible)
     proposal_types: jnp.ndarray  # (n_blocks,) remapped indices into compact dispatch
     settings_matrix: jnp.ndarray # (n_blocks, MAX_SETTINGS)
+
+    # Mixed-proposal group fields (for blocks with multiple proposal types)
+    group_starts: jnp.ndarray        # (n_blocks, MAX_PROPOSAL_GROUPS)
+    group_ends: jnp.ndarray          # (n_blocks, MAX_PROPOSAL_GROUPS)
+    group_proposal_types: jnp.ndarray  # (n_blocks, MAX_PROPOSAL_GROUPS)
+    group_settings: jnp.ndarray      # (n_blocks, MAX_PROPOSAL_GROUPS, MAX_SETTINGS)
+    group_masks: jnp.ndarray         # (n_blocks, MAX_PROPOSAL_GROUPS)
+    num_groups: jnp.ndarray          # (n_blocks,)
+
+    # Metadata
     max_size: int
     num_blocks: int
     total_params: int
     used_proposal_types: tuple   # Original ProposalType values used (dispatch order)
+    has_mixed_proposals: bool    # True if any block has multiple groups
 ```
 
 ### RunParams (frozen dataclass)
@@ -476,6 +490,47 @@ diagnostics = results['diagnostics']
 results, checkpoint = rmcmc(config, data, reset_from='checkpoint.npz',
                             reset_noise_scale=0.1)
 ```
+
+### Mixed Proposals (Multiple Proposal Types per Block)
+
+When a block contains both continuous and discrete parameters, you can use different
+proposal types for different sub-groups within the block:
+
+```python
+from bamcmc import BlockSpec, ProposalGroup, SamplerType, ProposalType, create_mixed_subject_blocks
+
+# Define proposal groups for a block of size 13:
+# - Params 0-11: continuous (use MCOV_MODE)
+# - Param 12: discrete model indicator (use MULTINOMIAL)
+groups = [
+    ProposalGroup(start=0, end=12, proposal_type=ProposalType.MCOV_MODE,
+                  settings={'cov_mult': 1.0}),
+    ProposalGroup(start=12, end=13, proposal_type=ProposalType.MULTINOMIAL,
+                  settings={'alpha': 0.5, 'n_categories': 2}),
+]
+
+# Create block with mixed proposals
+spec = BlockSpec(
+    size=13,
+    sampler_type=SamplerType.METROPOLIS_HASTINGS,
+    proposal_groups=groups,
+    label="Subject_0"
+)
+
+# Or use helper for many identical subject blocks
+specs = create_mixed_subject_blocks(245, groups, label_prefix="Subj")
+```
+
+**Key points:**
+- Groups must be contiguous and cover the entire block
+- Maximum 4 groups per block (`MAX_PROPOSAL_GROUPS`)
+- Hastings ratios are combined by multiplication: q(θ|θ')/q(θ'|θ) = Π[qᵢ ratio]
+- Gradient-based proposals (MALA) cannot be used for discrete groups
+- Settings are per-group (each group has its own `alpha`, `cov_mult`, etc.)
+
+**Use case:** Mixture models where each subject has continuous preferences plus a
+discrete model assignment indicator. Combining these in one block enables joint
+updates that can improve mixing for the discrete indicator.
 
 ## Performance Considerations
 

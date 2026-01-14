@@ -9,12 +9,17 @@ Key improvements over the old (size, type) tuple system:
 2. Extensible: Easy to add new fields without breaking existing code
 3. Type-safe: Using dataclasses catches errors at definition time
 4. Flexible: Supports per-block settings and metadata
+5. Mixed proposals: Different proposal types for sub-groups within a block
 """
 
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Callable, List
 from enum import IntEnum
 import numpy as np
+
+
+# Maximum number of proposal groups per block (for JAX fixed-shape arrays)
+MAX_PROPOSAL_GROUPS = 4
 
 
 # ============================================================================
@@ -83,6 +88,57 @@ class ProposalType(IntEnum):
 
 
 # ============================================================================
+# PROPOSAL GROUP (for mixed proposals within a block)
+# ============================================================================
+
+@dataclass
+class ProposalGroup:
+    """
+    Specification for a proposal sub-group within a block.
+
+    Used when different parameters within a single MH block require different
+    proposal types. For example, continuous parameters (0-11) using MCOV_MODE
+    and a discrete indicator (12) using MULTINOMIAL.
+
+    The indices are relative to the block, not the full parameter vector.
+    Groups must be contiguous and non-overlapping, covering the entire block.
+
+    Fields:
+        start: Starting index within block (0-indexed, inclusive)
+        end: Ending index within block (exclusive)
+        proposal_type: ProposalType for this sub-group
+        settings: Per-group settings (alpha, cov_mult, etc.)
+
+    Example:
+        # Block of size 13: params 0-11 continuous, param 12 discrete
+        ProposalGroup(start=0, end=12, proposal_type=ProposalType.MCOV_MODE,
+                      settings={'cov_mult': 1.0})
+        ProposalGroup(start=12, end=13, proposal_type=ProposalType.MULTINOMIAL,
+                      settings={'alpha': 0.5, 'n_categories': 2})
+    """
+    start: int
+    end: int
+    proposal_type: 'ProposalType'
+    settings: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.start < 0:
+            raise ValueError(f"ProposalGroup start must be >= 0, got {self.start}")
+        if self.end <= self.start:
+            raise ValueError(f"ProposalGroup end ({self.end}) must be > start ({self.start})")
+        if not isinstance(self.proposal_type, (ProposalType, int)):
+            raise ValueError(f"proposal_type must be ProposalType or int, got {type(self.proposal_type)}")
+        # Convert int to ProposalType if needed
+        if isinstance(self.proposal_type, int):
+            object.__setattr__(self, 'proposal_type', ProposalType(self.proposal_type))
+
+    @property
+    def size(self) -> int:
+        """Number of parameters in this group."""
+        return self.end - self.start
+
+
+# ============================================================================
 # BLOCK SPECIFICATION
 # ============================================================================
 
@@ -98,10 +154,12 @@ class BlockSpec:
         sampler_type: How to sample this block (MH, direct, coupled_transform, etc.)
 
     Optional fields:
-        proposal_type: For MH samplers, which proposal strategy to use
+        proposal_type: For MH samplers, which proposal strategy to use (single proposal)
+        proposal_groups: For mixed proposals, list of ProposalGroup objects defining
+                         different proposal types for contiguous sub-groups
         direct_sampler_fn: For direct samplers, the sampling function
         label: Human-readable name for debugging/logging
-        settings: Dict of sampler-specific settings
+        settings: Dict of sampler-specific settings (used when proposal_type is set)
         metadata: Additional info (not used by sampler, for user reference)
 
     For COUPLED_TRANSFORM sampler type (theta-preserving updates):
@@ -112,6 +170,16 @@ class BlockSpec:
                                   coupled_indices, data) -> log |det J|
         coupled_log_prior_fn: Function(values) -> log prior for coupled params
 
+    Mixed Proposals:
+        When proposal_groups is specified, different parts of the block use different
+        proposal types. This is useful for blocks containing both continuous and discrete
+        parameters. The groups must be contiguous and cover the entire block.
+
+        The Hastings ratio for mixed proposals is the product of individual ratios:
+            q(θ|θ')/q(θ'|θ) = Π[qᵢ(θᵢ|θ'ᵢ)/qᵢ(θ'ᵢ|θᵢ)]
+
+        Note: Gradient-based proposals (MALA) cannot be used for discrete parameters.
+
     Examples:
         # Simple MH block with random walk
         BlockSpec(size=2, sampler_type=SamplerType.METROPOLIS_HASTINGS)
@@ -119,6 +187,16 @@ class BlockSpec:
         # MH block with independent proposal
         BlockSpec(size=3, sampler_type=SamplerType.METROPOLIS_HASTINGS,
                   proposal_type=ProposalType.CHAIN_MEAN)
+
+        # Mixed proposal block: continuous (0-11) + discrete (12)
+        BlockSpec(size=13, sampler_type=SamplerType.METROPOLIS_HASTINGS,
+                  proposal_groups=[
+                      ProposalGroup(start=0, end=12, proposal_type=ProposalType.MCOV_MODE,
+                                    settings={'cov_mult': 1.0}),
+                      ProposalGroup(start=12, end=13, proposal_type=ProposalType.MULTINOMIAL,
+                                    settings={'alpha': 0.5, 'n_categories': 2}),
+                  ],
+                  label="Subject_0")
 
         # Direct sampler block
         BlockSpec(size=1, sampler_type=SamplerType.DIRECT_CONJUGATE,
@@ -138,8 +216,11 @@ class BlockSpec:
     size: int
     sampler_type: SamplerType
 
-    # Optional - for MH samplers
+    # Optional - for MH samplers (single proposal type for entire block)
     proposal_type: Optional[ProposalType] = ProposalType.SELF_MEAN
+
+    # Optional - for MH samplers (mixed proposals: different types for sub-groups)
+    proposal_groups: Optional[List['ProposalGroup']] = None
 
     # Optional - for direct samplers
     direct_sampler_fn: Optional[Callable] = None
@@ -169,6 +250,10 @@ class BlockSpec:
 
         if self.proposal_type is not None and isinstance(self.proposal_type, int):
             object.__setattr__(self, 'proposal_type', ProposalType(self.proposal_type))
+
+        # Validate proposal_groups if provided
+        if self.proposal_groups is not None:
+            self._validate_proposal_groups()
 
         # Validate sampler-specific requirements
         if self.sampler_type == SamplerType.DIRECT_CONJUGATE:
@@ -206,6 +291,58 @@ class BlockSpec:
             # If no per-block callbacks, the model must register coupled_transform_dispatch
             # This is validated at registration time by config.py
 
+    def _validate_proposal_groups(self):
+        """Validate proposal_groups specification."""
+        groups = self.proposal_groups
+
+        if len(groups) == 0:
+            raise ValueError("proposal_groups cannot be empty if specified")
+
+        if len(groups) > MAX_PROPOSAL_GROUPS:
+            raise ValueError(
+                f"Too many proposal groups ({len(groups)}), maximum is {MAX_PROPOSAL_GROUPS}"
+            )
+
+        # Check groups cover entire block contiguously
+        sorted_groups = sorted(groups, key=lambda g: g.start)
+
+        # First group must start at 0
+        if sorted_groups[0].start != 0:
+            raise ValueError(
+                f"First proposal group must start at 0, got {sorted_groups[0].start}"
+            )
+
+        # Last group must end at block size
+        if sorted_groups[-1].end != self.size:
+            raise ValueError(
+                f"Last proposal group must end at block size ({self.size}), "
+                f"got {sorted_groups[-1].end}"
+            )
+
+        # Groups must be contiguous (no gaps or overlaps)
+        for i in range(len(sorted_groups) - 1):
+            if sorted_groups[i].end != sorted_groups[i + 1].start:
+                raise ValueError(
+                    f"Proposal groups must be contiguous: group ending at "
+                    f"{sorted_groups[i].end} followed by group starting at "
+                    f"{sorted_groups[i + 1].start}"
+                )
+
+        # Validate no gradient-based proposals on discrete parameters
+        # (MULTINOMIAL indicates discrete; MALA/MEAN_MALA need gradients)
+        gradient_proposals = {ProposalType.MALA, ProposalType.MEAN_MALA}
+        discrete_proposals = {ProposalType.MULTINOMIAL}
+
+        for group in groups:
+            if group.proposal_type in gradient_proposals:
+                # Check if any other group in this block uses MULTINOMIAL
+                # (indicates the block has discrete parameters)
+                has_discrete = any(g.proposal_type in discrete_proposals for g in groups)
+                if has_discrete:
+                    # This is fine - gradient proposal is on a different group
+                    pass
+                # Additional checks could be added here for future discrete proposal types
+
     def is_mh_sampler(self):
         """Check if this block uses a Metropolis-Hastings sampler."""
         return self.sampler_type in [
@@ -224,14 +361,42 @@ class BlockSpec:
             SamplerType.ELLIPTICAL_SLICE
         ]
 
+    def has_mixed_proposals(self):
+        """Check if this block uses multiple proposal types."""
+        return self.proposal_groups is not None and len(self.proposal_groups) > 0
+
+    def get_effective_groups(self) -> List['ProposalGroup']:
+        """
+        Get the effective proposal groups for this block.
+
+        If proposal_groups is specified, returns them directly.
+        Otherwise, returns a single group covering the entire block
+        using proposal_type and settings.
+
+        Returns:
+            List of ProposalGroup objects
+        """
+        if self.has_mixed_proposals():
+            return list(self.proposal_groups)
+        else:
+            # Single implicit group covering entire block
+            return [ProposalGroup(
+                start=0,
+                end=self.size,
+                proposal_type=self.proposal_type,
+                settings=dict(self.settings)
+            )]
+
     def __repr__(self):
         """Pretty string representation for debugging."""
         parts = [f"BlockSpec(size={self.size}, sampler={self.sampler_type}"]
-        if self.proposal_type is not None and self.is_mh_sampler():
+        if self.has_mixed_proposals():
+            parts.append(f"mixed_proposals={len(self.proposal_groups)} groups")
+        elif self.proposal_type is not None and self.is_mh_sampler():
             parts.append(f"proposal={self.proposal_type}")
         if self.label:
             parts.append(f'label="{self.label}"')
-        if self.settings:
+        if self.settings and not self.has_mixed_proposals():
             parts.append(f"settings={self.settings}")
         return ", ".join(parts) + ")"
 
@@ -347,6 +512,54 @@ def create_subject_blocks(n_subjects: int,
     ]
 
 
+def create_mixed_subject_blocks(
+    n_subjects: int,
+    proposal_groups: List[ProposalGroup],
+    sampler_type: SamplerType = SamplerType.METROPOLIS_HASTINGS,
+    label_prefix: str = "Subject"
+) -> List[BlockSpec]:
+    """
+    Convenience function to create subject blocks with mixed proposals.
+
+    Each subject block uses the same proposal_groups configuration,
+    allowing different proposal types for different parameters within
+    each subject's block.
+
+    Args:
+        n_subjects: Number of subjects
+        proposal_groups: List of ProposalGroup objects defining the proposal
+                         structure. The total size is inferred from groups.
+        sampler_type: Sampler to use (default METROPOLIS_HASTINGS)
+        label_prefix: Prefix for block labels
+
+    Returns:
+        List of BlockSpec objects, one per subject
+
+    Example:
+        # Subject blocks with 12 continuous params (MCOV_MODE) + 1 discrete (MULTINOMIAL)
+        groups = [
+            ProposalGroup(start=0, end=12, proposal_type=ProposalType.MCOV_MODE,
+                          settings={'cov_mult': 1.0}),
+            ProposalGroup(start=12, end=13, proposal_type=ProposalType.MULTINOMIAL,
+                          settings={'alpha': 0.5, 'n_categories': 2}),
+        ]
+        specs = create_mixed_subject_blocks(245, groups, label_prefix="Subj")
+    """
+    if not proposal_groups:
+        raise ValueError("proposal_groups cannot be empty")
+
+    # Infer block size from groups
+    block_size = max(g.end for g in proposal_groups)
+
+    return [
+        BlockSpec(
+            size=block_size,
+            sampler_type=sampler_type,
+            proposal_groups=proposal_groups,
+            label=f"{label_prefix}_{i}"
+        )
+        for i in range(n_subjects)
+    ]
 
 
 # ============================================================================

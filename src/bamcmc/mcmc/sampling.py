@@ -3,6 +3,7 @@ MCMC Sampling Functions.
 
 Core sampling functions for the MCMC backend:
 - propose_multivariate_block: Generate proposals for parameter blocks
+- propose_mixed_block: Generate proposals for blocks with multiple proposal groups
 - metropolis_block_step: Metropolis-Hastings step for a single block
 - direct_block_step: Direct sampling step for conjugate blocks
 - full_chain_iteration: Full Gibbs iteration over all blocks
@@ -14,7 +15,7 @@ import jax.numpy as jnp
 import jax.random as random
 from functools import partial
 
-from ..batch_specs import SamplerType, ProposalType
+from ..batch_specs import SamplerType, ProposalType, MAX_PROPOSAL_GROUPS
 from ..proposals import (
     self_mean_proposal,
     chain_mean_proposal,
@@ -100,13 +101,128 @@ def propose_multivariate_block(key, current_block, block_mean, block_cov, couple
     return proposal, log_ratio, new_key
 
 
+def propose_mixed_block(key, current_block, block_mean, block_cov, coupled_blocks,
+                        block_mode, block_mask, num_groups,
+                        group_starts, group_ends, group_proposal_types, group_settings, group_masks,
+                        grad_fn, used_proposal_types):
+    """
+    Generate proposals for a block with multiple proposal groups.
+
+    For each group, generates a proposal using the group's proposal type,
+    then combines all proposals and Hastings ratios.
+
+    The combined Hastings ratio is the product of individual ratios:
+        q(θ|θ')/q(θ'|θ) = Π[qᵢ(θᵢ|θ'ᵢ)/qᵢ(θ'ᵢ|θᵢ)]
+    In log space: log q ratio = Σ log qᵢ ratio
+
+    Args:
+        key: JAX random key
+        current_block: Current parameter values (block_size,)
+        block_mean: Precomputed mean (block_size,)
+        block_cov: Precomputed covariance (block_size, block_size)
+        coupled_blocks: Raw states from opposite group (n_chains, block_size)
+        block_mode: Mode chain values (block_size,)
+        block_mask: Mask for valid parameters (block_size,)
+        num_groups: Number of valid proposal groups for this block
+        group_starts: Start indices for each group (MAX_PROPOSAL_GROUPS,)
+        group_ends: End indices for each group (MAX_PROPOSAL_GROUPS,)
+        group_proposal_types: Remapped proposal types (MAX_PROPOSAL_GROUPS,)
+        group_settings: Per-group settings (MAX_PROPOSAL_GROUPS, MAX_SETTINGS)
+        group_masks: Valid group mask (MAX_PROPOSAL_GROUPS,)
+        grad_fn: Gradient function (only used by MALA proposals)
+        used_proposal_types: Tuple of original ProposalType values
+
+    Returns:
+        proposal: Combined proposed values (block_size,)
+        log_ratio: Combined log Hastings ratio (sum of individual log ratios)
+        new_key: Updated random key
+    """
+    block_size = current_block.shape[0]
+
+    def process_group(carry, g):
+        """Process one proposal group."""
+        current_key, combined_proposal, total_log_ratio = carry
+
+        # Get group boundaries and mask
+        start = group_starts[g]
+        end = group_ends[g]
+        gmask = group_masks[g]
+
+        # Extract sub-block values
+        # Use dynamic slicing - this works because groups are contiguous
+        group_size = end - start
+
+        # Create masks for this group's range within block
+        idx = jnp.arange(block_size)
+        in_group = (idx >= start) & (idx < end)
+        group_mask_expanded = jnp.where(in_group, block_mask, 0.0)
+
+        # Extract group's current values, mean, mode, settings
+        group_current = current_block  # Full block, masked by group_mask_expanded
+        group_mean = block_mean
+        group_cov = block_cov
+        group_mode = block_mode
+        group_coupled = coupled_blocks
+        group_proposal_type = group_proposal_types[g]
+        settings = group_settings[g]
+
+        # Split key for this group
+        current_key, group_key = random.split(current_key)
+
+        # Generate proposal for this group using full-block arrays but group-specific mask
+        # The proposal function will only modify positions where group_mask_expanded > 0
+        proposed, log_ratio, _ = propose_multivariate_block(
+            group_key, group_current, group_mean, group_cov, group_coupled,
+            group_mode, group_mask_expanded, group_proposal_type, settings,
+            grad_fn, used_proposal_types
+        )
+
+        # Combine proposal: update only positions in this group
+        combined_proposal = jnp.where(in_group & (gmask > 0), proposed, combined_proposal)
+
+        # Accumulate log Hastings ratio (only if group is valid)
+        total_log_ratio = total_log_ratio + jnp.where(gmask > 0, log_ratio, 0.0)
+
+        return (current_key, combined_proposal, total_log_ratio), None
+
+    # Initialize with current values (groups will overwrite their positions)
+    init_carry = (key, current_block, 0.0)
+
+    # Process all MAX_PROPOSAL_GROUPS (invalid groups are masked out)
+    (final_key, final_proposal, final_log_ratio), _ = jax.lax.scan(
+        process_group,
+        init_carry,
+        jnp.arange(MAX_PROPOSAL_GROUPS)
+    )
+
+    return final_proposal, final_log_ratio, final_key
+
+
 def metropolis_block_step(operand, log_post_fn, grad_log_post_fn, used_proposal_types):
     """
     Perform one Metropolis-Hastings step for a single block.
 
+    Supports both single-proposal blocks and mixed-proposal blocks (with multiple
+    proposal groups). For mixed blocks, the operand includes group arrays.
+
     Args:
-        operand: Tuple of (key, chain_state, block_idx_vec, block_mean, block_cov,
-                          coupled_blocks, block_mode, block_mask, proposal_type, settings)
+        operand: Tuple containing:
+            - key: Random key
+            - chain_state: Full chain state
+            - block_idx_vec: Parameter indices for this block
+            - block_mean: Precomputed mean for proposal
+            - block_cov: Precomputed covariance for proposal
+            - coupled_blocks: Raw states from opposite group
+            - block_mode: Mode chain values
+            - block_mask: Valid parameter mask
+            - proposal_type: Remapped proposal type (for single-proposal blocks)
+            - settings: Settings array (for single-proposal blocks)
+            - num_groups: Number of proposal groups (0 or 1 = single, >1 = mixed)
+            - group_starts: Start indices per group
+            - group_ends: End indices per group
+            - group_proposal_types: Proposal type per group
+            - group_settings: Settings per group
+            - group_masks: Valid group mask
         log_post_fn: Log posterior function
         grad_log_post_fn: Pre-created gradient function (for MALA proposals)
         used_proposal_types: Tuple of ProposalType values actually used (for compact dispatch)
@@ -114,7 +230,9 @@ def metropolis_block_step(operand, log_post_fn, grad_log_post_fn, used_proposal_
     Returns:
         next_state, new_key, chosen_lp, accepted
     """
-    key, chain_state, block_idx_vec, block_mean, block_cov, coupled_blocks, block_mode, block_mask, proposal_type, settings = operand
+    (key, chain_state, block_idx_vec, block_mean, block_cov, coupled_blocks,
+     block_mode, block_mask, proposal_type, settings,
+     num_groups, group_starts, group_ends, group_proposal_types, group_settings, group_masks) = operand
 
     safe_indices = jnp.clip(block_idx_vec, 0, chain_state.shape[0] - 1)
     current_block_values = jnp.take(chain_state, safe_indices)
@@ -134,11 +252,31 @@ def metropolis_block_step(operand, log_post_fn, grad_log_post_fn, used_proposal_
 
         return jax.grad(log_post_of_block)(block_values) * block_mask
 
-    # Generate proposal using unified interface with compact dispatch table
-    # Only proposals in used_proposal_types are traced by JAX
-    proposed_block_values, log_den_ratio, key = propose_multivariate_block(
-        key, current_block_values, block_mean, block_cov, coupled_blocks,
-        block_mode, block_mask, proposal_type, settings, block_grad_fn, used_proposal_types
+    # Choose between single-proposal and mixed-proposal paths
+    # Use mixed path if num_groups > 1
+    use_mixed = num_groups > 1
+
+    def single_proposal_path():
+        """Standard single-proposal path."""
+        return propose_multivariate_block(
+            key, current_block_values, block_mean, block_cov, coupled_blocks,
+            block_mode, block_mask, proposal_type, settings, block_grad_fn, used_proposal_types
+        )
+
+    def mixed_proposal_path():
+        """Mixed-proposal path for blocks with multiple groups."""
+        return propose_mixed_block(
+            key, current_block_values, block_mean, block_cov, coupled_blocks,
+            block_mode, block_mask, num_groups,
+            group_starts, group_ends, group_proposal_types, group_settings, group_masks,
+            block_grad_fn, used_proposal_types
+        )
+
+    # Generate proposal using appropriate path
+    proposed_block_values, log_den_ratio, key = jax.lax.cond(
+        use_mixed,
+        mixed_proposal_path,
+        single_proposal_path
     )
 
     actual_proposal_values = jnp.where(block_mask, proposed_block_values, current_block_values)
@@ -195,13 +333,15 @@ def direct_block_step(operand, direct_sampler_fn):
     Perform direct sampling step for conjugate blocks.
 
     Args:
-        operand: Tuple of (key, chain_state, block_idx_vec, ...)
+        operand: Tuple with extended format (key, chain_state, block_idx_vec, ..., group arrays)
         direct_sampler_fn: Direct sampling function
 
     Returns:
         next_state, new_key, log_prob (0.0), accepted (1.0)
     """
-    key, chain_state, block_idx_vec, _, _, _, _, _, _, _ = operand
+    # Unpack only the fields we need; ignore group arrays
+    (key, chain_state, block_idx_vec, _, _, _, _, _, _, _,
+     _, _, _, _, _, _) = operand
     new_state, new_key = direct_sampler_fn(key, chain_state, block_idx_vec)
     # Safeguard: replace any NaN/Inf values with original state values
     # This prevents bad samples from propagating through the chain
@@ -225,8 +365,7 @@ def coupled_transform_step(operand, log_post_fn, coupled_transform_fn, used_prop
     and epsilon values are deterministically transformed to keep theta constant.
 
     Args:
-        operand: Tuple of (key, chain_state, block_idx_vec, block_mean, block_cov,
-                          coupled_blocks, block_mode, block_mask, proposal_type, settings)
+        operand: Tuple with extended format including group arrays
         log_post_fn: Log posterior function (for hyperprior evaluation)
         coupled_transform_fn: Function returning (coupled_indices, new_coupled,
                                                   log_jacobian, log_prior_ratio, new_key)
@@ -235,7 +374,10 @@ def coupled_transform_step(operand, log_post_fn, coupled_transform_fn, used_prop
     Returns:
         next_state, new_key, chosen_lp, accepted
     """
-    key, chain_state, block_idx_vec, block_mean, block_cov, coupled_blocks, block_mode, block_mask, proposal_type, settings = operand
+    # Unpack - ignore group arrays for coupled transform (uses single proposal)
+    (key, chain_state, block_idx_vec, block_mean, block_cov, coupled_blocks,
+     block_mode, block_mask, proposal_type, settings,
+     _, _, _, _, _, _) = operand
 
     safe_indices = jnp.clip(block_idx_vec, 0, chain_state.shape[0] - 1)
     current_block_values = jnp.take(chain_state, safe_indices)
@@ -357,7 +499,18 @@ def full_chain_iteration(key, chain_state, block_means, block_covs, coupled_bloc
         b_proposal_type = block_arrays.proposal_types[block_i]
         b_settings = block_arrays.settings_matrix[block_i]
 
-        operand = (current_key, current_state, b_indices, b_mean, b_cov, b_coupled, b_mode, b_mask, b_proposal_type, b_settings)
+        # Group arrays for mixed proposals
+        b_num_groups = block_arrays.num_groups[block_i]
+        b_group_starts = block_arrays.group_starts[block_i]
+        b_group_ends = block_arrays.group_ends[block_i]
+        b_group_proposal_types = block_arrays.group_proposal_types[block_i]
+        b_group_settings = block_arrays.group_settings[block_i]
+        b_group_masks = block_arrays.group_masks[block_i]
+
+        operand = (current_key, current_state, b_indices, b_mean, b_cov, b_coupled,
+                   b_mode, b_mask, b_proposal_type, b_settings,
+                   b_num_groups, b_group_starts, b_group_ends,
+                   b_group_proposal_types, b_group_settings, b_group_masks)
 
         # Dispatch to appropriate sampler based on type
         # 0=MH, 1=DIRECT, 2=COUPLED_TRANSFORM
