@@ -150,12 +150,14 @@ def attempt_temperature_swaps(
     # E.g., with 32 chains and 4 temps: chains 0-7 at temp 0, 8-15 at temp 1, etc.
     chains_per_temp = n_chains // n_temperatures
 
-    # Parameter indices for log posterior evaluation
+    # Compute log posteriors for ALL chains in parallel via vmap (GPU-efficient)
+    # We track these through swaps to keep them synchronized with states
     all_param_indices = jnp.arange(all_states.shape[1])
+    initial_log_posts = jax.vmap(lambda s: log_post_fn(s, all_param_indices))(all_states)
 
     def swap_one_pair(carry, temp_idx):
         """Attempt swap between temperatures temp_idx and temp_idx+1."""
-        current_states, current_key, accepts, attempts = carry
+        current_states, current_log_posts, current_key, accepts, attempts = carry
 
         # Split key for this swap attempt
         current_key, swap_key, select_key_i, select_key_j = random.split(current_key, 4)
@@ -176,9 +178,9 @@ def attempt_temperature_swaps(
         beta_i = temperature_ladder[temp_idx]
         beta_j = temperature_ladder[temp_idx + 1]
 
-        # Compute log posteriors only for the two selected chains (not all chains)
-        log_pi_i = log_post_fn(current_states[chain_i], all_param_indices)
-        log_pi_j = log_post_fn(current_states[chain_j], all_param_indices)
+        # Get log posteriors from tracked array (kept in sync with states)
+        log_pi_i = current_log_posts[chain_i]
+        log_pi_j = current_log_posts[chain_j]
 
         # Swap acceptance ratio
         # α = exp((β_i - β_j) × (log_π(θ_j) - log_π(θ_i)))
@@ -200,15 +202,23 @@ def attempt_temperature_swaps(
             current_states
         )
 
+        # Also swap log posteriors to keep them in sync with states
+        new_log_posts = jax.lax.cond(
+            accept,
+            lambda lp: lp.at[chain_i].set(log_pi_j).at[chain_j].set(log_pi_i),
+            lambda lp: lp,
+            current_log_posts
+        )
+
         # Update counts
         new_accepts = accepts.at[temp_idx].add(jnp.int32(accept))
         new_attempts = attempts.at[temp_idx].add(jnp.int32(1))
 
-        return (new_states, current_key, new_accepts, new_attempts), None
+        return (new_states, new_log_posts, current_key, new_accepts, new_attempts), None
 
     # Attempt swaps for all adjacent temperature pairs
-    init_carry = (all_states, key, swap_accepts, swap_attempts)
-    (final_states, final_key, final_accepts, final_attempts), _ = jax.lax.scan(
+    init_carry = (all_states, initial_log_posts, key, swap_accepts, swap_attempts)
+    (final_states, _, final_key, final_accepts, final_attempts), _ = jax.lax.scan(
         swap_one_pair,
         init_carry,
         jnp.arange(n_temperatures - 1)
