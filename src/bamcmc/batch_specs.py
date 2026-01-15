@@ -77,10 +77,11 @@ class ProposalType(IntEnum):
     MCOV_WEIGHTED = 8      # Mean-Cov weighted: covariance scales with distance, affects mean interpolation
     MCOV_WEIGHTED_VEC = 9  # Vectorized MCOV: per-parameter distance, interpolation, and cov scaling
     MCOV_SMOOTH = 10       # Three-zone smoothstep: chain_mean near equilibrium, tracking mid-range, rescue far
-    MCOV_MODE = 11         # Like MCOV_SMOOTH but targets mode (highest LP chain) instead of mean
+    MCOV_MODE = 11         # Mode-targeting with scalar Mahalanobis distance (uniform α across params)
+    MCOV_MODE_VEC = 12     # Mode-targeting with per-parameter distances (individual α per param)
 
     # Future proposals - add new enum values here, implement in proposals.py
-    # ADAPTIVE = 12       # Adaptive covariance during burn-in
+    # ADAPTIVE = 13       # Adaptive covariance during burn-in
     # PRECONDITIONED = 13 # Use custom preconditioning matrix
 
     def __str__(self):

@@ -29,6 +29,7 @@ from ..proposals import (
     mcov_weighted_vec_proposal,
     mcov_smooth_proposal,
     mcov_mode_proposal,
+    mcov_mode_vec_proposal,
 )
 from .types import BlockArrays
 
@@ -48,6 +49,7 @@ PROPOSAL_REGISTRY = {
     int(ProposalType.MCOV_WEIGHTED_VEC): mcov_weighted_vec_proposal,
     int(ProposalType.MCOV_SMOOTH): mcov_smooth_proposal,
     int(ProposalType.MCOV_MODE): mcov_mode_proposal,
+    int(ProposalType.MCOV_MODE_VEC): mcov_mode_vec_proposal,
 }
 
 

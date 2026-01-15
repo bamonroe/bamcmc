@@ -1,45 +1,46 @@
 """
-Mode-Targeting Mean-Covariance Proposal (MCOV_MODE) - Scalar Distance
+Mode-Targeting Mean-Covariance Proposal (MCOV_MODE_VEC) - Vectorized
 
-Like MCOV_MODE_VEC, but uses a single scalar Mahalanobis distance instead of
-per-parameter distances. This gives uniform behavior across all parameters.
+Like MCOV_SMOOTH, but targets the MODE (highest log-posterior chain) instead of
+the coupled mean. This breaks the feedback loop where the coupled mean is
+dominated by lower-density modes.
 
 The key insight: when the posterior has multiple modes, the coupled mean sits
 between them, creating asymmetric dynamics that trap chains in lower-density
 modes. By targeting the highest LP chain (the mode), all chains are pulled
 toward the best region of parameter space.
 
-Uses scalar distance for unified control:
-- Single Mahalanobis distance d from mode determines both α and g
-- All parameters share the same α (uniform interpolation)
-- Simpler dynamics, may be more stable for correlated parameters
+Uses per-parameter distances and α values for fine-grained control:
+- Each parameter gets its own α based on its individual distance from the mode
+- Covariance scaling g uses minimum across parameters (cautious when any param is far)
 
-At equilibrium (d ≈ 0):
-    - α ≈ 0: proposal centered on mode
+At equilibrium (d_i ≈ 0 for all i):
+    - α_i ≈ 0: proposal centered on mode
     - g ≈ 1: full step size variance
     - Behavior: fast mixing around mode
 
-Far from mode (d large):
-    - α → 1: track current state
-    - g → 0: small, cautious steps
+Far from mode (any d_i large):
+    - α_i → 1 for far parameters: track current state
+    - g → 0: small, cautious steps (driven by farthest parameter)
     - Behavior: gentle guidance back toward mode
 
 Algorithm:
-    1. Compute Mahalanobis distance from MODE: d = sqrt((x - mode)' Σ^{-1} (x - mode))
-    2. Compute smooth parameters:
-       g = 1 / (1 + (d / k_g)²)
-       d2 = d / sqrt(g)
-       α = d2² / (d2² + k_α²)
-    3. Proposal mean: μ_prop = α × x + (1 - α) × mode
-    4. Proposal covariance: Σ_prop = g × Σ_base
-    5. Sample: y ~ N(μ_prop, Σ_prop)
+    1. Compute per-parameter distances from MODE: d_i = |x_i - mode_i| / σ_i
+    2. Compute smooth parameters per-parameter:
+       g_i = 1 / (1 + (d_i / k_g)²)
+       d2_i = d_i / sqrt(g_i)
+       α_i = d2_i² / (d2_i² + k_α²)
+    3. Scalar g = min(g_i) for covariance scaling
+    4. Proposal mean: μ_prop_i = α_i × x_i + (1 - α_i) × mode_i
+    5. Proposal covariance: Σ_prop = g × Σ_base
+    6. Sample: y ~ N(μ_prop, Σ_prop)
 
 Parameters:
     - COV_MULT: Base step size multiplier (default 1.0)
-    - K_G: Controls g decay rate (default 10.0)
-    - K_ALPHA: Controls α rise rate (default 3.0)
+    - K_G: Controls g decay rate per parameter (default 10.0)
+    - K_ALPHA: Controls α rise rate per parameter (default 3.0)
 
-Example behavior:
+Example behavior per parameter:
     d=0:   α=0.00, g=1.00  (pure mode-targeting)
     d=1:   α=0.10, g=0.99  (gentle pull begins)
     d=2:   α=0.31, g=0.96  (moderate blend)
@@ -59,44 +60,54 @@ from ..settings import SettingSlot
 COV_NUGGET = 1e-6
 
 
-def compute_alpha_g_scalar(d, k_g, k_alpha):
+def compute_alpha_g_vec(d_vec, block_mask, k_g, k_alpha):
     """
-    Compute scalar α and g with smooth transition based on Mahalanobis distance.
+    Compute per-parameter α and scalar g with smooth transition.
 
-    No hard boundaries - values change continuously from d=0:
+    No hard boundaries - parameters change continuously from d=0:
     - At d=0: α=0 (pure mode-targeting), g=1 (full variance)
     - As d→∞: α→1 (track current), g→0 (cautious steps)
 
     Args:
-        d: Scalar Mahalanobis distance from mode
+        d_vec: Per-parameter distances from mode (vector)
+        block_mask: Mask for valid parameters
         k_g: Controls g decay rate (higher = maintain larger steps further from mode)
         k_alpha: Controls α rise rate (higher = stay with mode-targeting longer)
 
     Returns:
-        alpha: Scalar interpolation weight
-        g: Scalar variance scaling factor
+        alpha_vec: Per-parameter interpolation weights (vector)
+        g: Scalar variance scaling factor (minimum across valid params)
     """
-    # g: decays from 1 toward 0 as d increases
-    g = 1.0 / (1.0 + (d / k_g) ** 2)
+    # g per parameter: decays from 1 toward 0 as d increases
+    g_vec = 1.0 / (1.0 + (d_vec / k_g) ** 2)
 
-    # d2: distance in proposal metric
-    sqrt_g = jnp.sqrt(jnp.maximum(g, 1e-10))
-    d2 = d / (sqrt_g + 1e-10)
+    # d2 per parameter: distance in proposal metric
+    sqrt_g_vec = jnp.sqrt(jnp.maximum(g_vec, 1e-10))
+    d2_vec = d_vec / (sqrt_g_vec + 1e-10)
 
-    # α: rises from 0 toward 1 as d2 increases
-    d2_sq = d2 ** 2
+    # α per parameter: rises from 0 toward 1 as d2 increases
+    d2_sq = d2_vec ** 2
     k_alpha_sq = k_alpha ** 2
-    alpha = d2_sq / (d2_sq + k_alpha_sq + 1e-10)
+    alpha_vec = d2_sq / (d2_sq + k_alpha_sq + 1e-10)
 
-    return alpha, g
+    # Scalar g: use minimum across valid parameters (cautious approach)
+    # When any parameter is far, use small steps
+    g_masked = jnp.where(block_mask > 0, g_vec, 1.0)  # Set masked to 1 so they don't affect min
+    g = jnp.min(g_masked)
+
+    # Zero out alpha for masked parameters
+    alpha_vec = alpha_vec * block_mask
+
+    return alpha_vec, g
 
 
-def mcov_mode_proposal(operand):
+def mcov_mode_vec_proposal(operand):
     """
-    Mode-targeting mean-covariance proposal with scalar α.
+    Mode-targeting mean-covariance proposal with per-parameter α (vectorized).
 
-    Like MCOV_MODE_VEC but uses a single Mahalanobis distance for all parameters,
-    giving uniform interpolation behavior across the block.
+    Like MCOV_SMOOTH but targets the mode (highest LP chain) instead of the
+    coupled mean. This prevents the feedback loop where chains get trapped
+    in lower-density modes.
 
     Args:
         operand: Tuple of (key, current_block, step_mean, step_cov,
@@ -123,21 +134,22 @@ def mcov_mode_proposal(operand):
     # Scale covariance by cov_mult, then regularize
     cov_scaled = cov_mult * step_cov + COV_NUGGET * jnp.eye(block_size)
 
-    # Cholesky decomposition for sampling and Mahalanobis distance
+    # Extract diagonal standard deviations for per-parameter distances
+    sigma_diag = jnp.sqrt(jnp.diag(cov_scaled))
+
+    # Cholesky decomposition for sampling
     L = jnp.linalg.cholesky(cov_scaled)
 
-    # === STEP 1: Compute Mahalanobis distance from MODE ===
+    # === STEP 1: Compute per-parameter distances from MODE ===
     diff_current = (current_block - block_mode) * block_mask
-    # d² = diff' Σ^{-1} diff = ||L^{-1} diff||²
-    y_current = jax.scipy.linalg.solve_triangular(L, diff_current, lower=True)
-    d_current = jnp.sqrt(jnp.sum(y_current ** 2) + 1e-10)
+    d_vec_current = jnp.abs(diff_current) / (sigma_diag + 1e-10)
 
-    # === STEP 2: Compute scalar alpha and g for current state ===
-    alpha_current, g_current = compute_alpha_g_scalar(d_current, k_g, k_alpha)
+    # === STEP 2: Compute per-param alpha and scalar g for current state ===
+    alpha_vec_current, g_current = compute_alpha_g_vec(d_vec_current, block_mask, k_g, k_alpha)
     sqrt_g_current = jnp.sqrt(jnp.maximum(g_current, 1e-10))
 
-    # === STEP 3: Compute proposal mean (uniform interpolation toward MODE) ===
-    prop_mean_current = alpha_current * current_block + (1.0 - alpha_current) * block_mode
+    # === STEP 3: Compute proposal mean (per-parameter interpolation toward MODE) ===
+    prop_mean_current = alpha_vec_current * current_block + (1.0 - alpha_vec_current) * block_mode
 
     # === STEP 4: Sample from N(μ_prop, g × Σ_base) ===
     # Sample: μ + sqrt(g) × L × z
@@ -148,13 +160,12 @@ def mcov_mode_proposal(operand):
 
     # === STEP 5: Compute quantities for reverse direction ===
     diff_proposal = (proposal - block_mode) * block_mask
-    y_proposal = jax.scipy.linalg.solve_triangular(L, diff_proposal, lower=True)
-    d_proposal = jnp.sqrt(jnp.sum(y_proposal ** 2) + 1e-10)
+    d_vec_proposal = jnp.abs(diff_proposal) / (sigma_diag + 1e-10)
 
-    alpha_proposal, g_proposal = compute_alpha_g_scalar(d_proposal, k_g, k_alpha)
+    alpha_vec_proposal, g_proposal = compute_alpha_g_vec(d_vec_proposal, block_mask, k_g, k_alpha)
     sqrt_g_proposal = jnp.sqrt(jnp.maximum(g_proposal, 1e-10))
 
-    prop_mean_proposal = alpha_proposal * proposal + (1.0 - alpha_proposal) * block_mode
+    prop_mean_proposal = alpha_vec_proposal * proposal + (1.0 - alpha_vec_proposal) * block_mode
 
     # === STEP 6: Hastings ratio ===
     # q(y|x) = N(y | μ_x, g_x × Σ_base)
