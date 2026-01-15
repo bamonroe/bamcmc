@@ -146,9 +146,12 @@ def attempt_temperature_swaps(
 
     # Combine A and B states for swapping
     all_states = jnp.concatenate([states_A, states_B], axis=0)
-    all_temp_assignments = jnp.concatenate([temp_assignments_A, temp_assignments_B], axis=0)
     n_chains = all_states.shape[0]
     n_chains_a = states_A.shape[0]
+
+    # Chains are assigned to temperatures in order: chains_per_temp chains per temperature
+    # E.g., with 32 chains and 4 temps: chains 0-7 at temp 0, 8-15 at temp 1, etc.
+    chains_per_temp = n_chains // n_temperatures
 
     # Compute untempered log-posteriors for all chains
     # Use a dummy block index for full evaluation
@@ -162,31 +165,17 @@ def attempt_temperature_swaps(
         # Split key for this swap attempt
         current_key, swap_key, select_key_i, select_key_j = random.split(current_key, 4)
 
-        # Find chains at each temperature
-        at_temp_i = all_temp_assignments == temp_idx
-        at_temp_j = all_temp_assignments == (temp_idx + 1)
+        # Compute start indices for chains at each temperature
+        # Chains are arranged: [temp0 chains][temp1 chains][temp2 chains]...
+        start_i = temp_idx * chains_per_temp
+        start_j = (temp_idx + 1) * chains_per_temp
 
-        # Count chains at each temperature
-        n_at_i = jnp.sum(at_temp_i)
-        n_at_j = jnp.sum(at_temp_j)
+        # Select random chain from each temperature group
+        offset_i = random.randint(select_key_i, (), 0, chains_per_temp)
+        offset_j = random.randint(select_key_j, (), 0, chains_per_temp)
 
-        # Select random chain from each temperature
-        # Use masked selection to handle variable counts
-        chain_indices = jnp.arange(n_chains)
-        chains_at_i = jnp.where(at_temp_i, chain_indices, -1)
-        chains_at_j = jnp.where(at_temp_j, chain_indices, -1)
-
-        # Get valid chain indices (filter out -1)
-        valid_i = chains_at_i[at_temp_i]
-        valid_j = chains_at_j[at_temp_j]
-
-        # Select one chain from each group (if any exist)
-        idx_in_i = random.randint(select_key_i, (), 0, jnp.maximum(n_at_i, 1))
-        idx_in_j = random.randint(select_key_j, (), 0, jnp.maximum(n_at_j, 1))
-
-        # Get actual chain indices (safe indexing)
-        chain_i = jnp.where(n_at_i > 0, valid_i[idx_in_i % jnp.maximum(n_at_i, 1)], 0)
-        chain_j = jnp.where(n_at_j > 0, valid_j[idx_in_j % jnp.maximum(n_at_j, 1)], 0)
+        chain_i = start_i + offset_i
+        chain_j = start_j + offset_j
 
         # Get temperatures and log posteriors
         beta_i = temperature_ladder[temp_idx]
@@ -197,13 +186,13 @@ def attempt_temperature_swaps(
 
         # Swap acceptance ratio
         # α = exp((β_i - β_j) × (log_π(θ_j) - log_π(θ_i)))
-        # Note: β_i > β_j (hotter temp has lower beta), so β_i - β_j > 0
+        # Note: β_i > β_j (colder temp has higher beta), so β_i - β_j > 0
         log_alpha = (beta_i - beta_j) * (log_pi_j - log_pi_i)
         log_alpha = jnp.nan_to_num(log_alpha, nan=-jnp.inf)
 
         # Accept/reject
         log_uniform = jnp.log(random.uniform(swap_key))
-        accept = (log_uniform < log_alpha) & (n_at_i > 0) & (n_at_j > 0)
+        accept = log_uniform < log_alpha
 
         # Swap states if accepted
         state_i = current_states[chain_i]
@@ -217,7 +206,7 @@ def attempt_temperature_swaps(
 
         # Update counts
         new_accepts = accepts.at[temp_idx].add(jnp.int32(accept))
-        new_attempts = attempts.at[temp_idx].add(jnp.int32((n_at_i > 0) & (n_at_j > 0)))
+        new_attempts = attempts.at[temp_idx].add(jnp.int32(1))
 
         return (new_states, current_key, new_accepts, new_attempts), None
 
