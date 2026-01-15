@@ -180,10 +180,11 @@ class TestCheckpointCompatibility:
                 num_gq=0, num_collect=100, num_blocks=3
             )
 
-            # Verify carry structure
-            assert len(initial_carry) == 8
+            # Verify carry structure (13 elements with tempering state)
+            assert len(initial_carry) == 13
             assert initial_carry[0].shape == (10, 5)  # states_A
             assert initial_carry[2].shape == (10, 5)  # states_B
+            # Elements 8-12 are tempering state (temp_ladder, temp_assign_A/B, swap_accepts/attempts)
 
     def test_missing_checkpoint_raises(self):
         """Test that loading non-existent checkpoint raises FileNotFoundError."""

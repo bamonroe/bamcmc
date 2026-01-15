@@ -18,7 +18,7 @@ def save_checkpoint(filepath, carry, user_config, metadata=None):
 
     Args:
         filepath: Path to save checkpoint (.npz file)
-        carry: Current MCMC carry tuple from run
+        carry: Current MCMC carry tuple from run (13 elements with tempering)
         user_config: User configuration dict (serializable, no JAX types)
         metadata: Optional dict of additional metadata
 
@@ -28,8 +28,15 @@ def save_checkpoint(filepath, carry, user_config, metadata=None):
         - Iteration count
         - Acceptance counts per block
         - Config needed for validation on resume
+        - Tempering state (if n_temperatures > 1)
     """
-    states_A, keys_A, states_B, keys_B, _, _, acceptance_counts, iteration = carry
+    # Unpack carry tuple - supports both old (8 elements) and new (13 elements) format
+    states_A = carry[0]
+    keys_A = carry[1]
+    states_B = carry[2]
+    keys_B = carry[3]
+    acceptance_counts = carry[6]
+    iteration = carry[7]
 
     checkpoint = {
         'states_A': np.asarray(states_A),
@@ -46,6 +53,16 @@ def save_checkpoint(filepath, carry, user_config, metadata=None):
         'num_superchains': user_config.get('num_superchains', 0),
         'subchains_per_super': user_config.get('subchains_per_super', 0),
     }
+
+    # Add tempering state if using parallel tempering
+    n_temperatures = user_config.get('n_temperatures', 1)
+    if n_temperatures > 1 and len(carry) > 8:
+        checkpoint['n_temperatures'] = n_temperatures
+        checkpoint['temperature_ladder'] = np.asarray(carry[8])
+        checkpoint['temp_assignments_A'] = np.asarray(carry[9])
+        checkpoint['temp_assignments_B'] = np.asarray(carry[10])
+        checkpoint['swap_accepts'] = np.asarray(carry[11])
+        checkpoint['swap_attempts'] = np.asarray(carry[12])
 
     if metadata:
         checkpoint['metadata'] = metadata
@@ -64,6 +81,7 @@ def load_checkpoint(filepath):
 
     Returns:
         Dict with checkpoint data including states, keys, iteration, etc.
+        Also includes tempering state if present in checkpoint.
     """
     filepath = Path(filepath)
     if not filepath.exists():
@@ -90,6 +108,15 @@ def load_checkpoint(filepath):
         if 'metadata' in data:
             checkpoint['metadata'] = data['metadata'].item()
 
+        # Load tempering state if present
+        if 'n_temperatures' in data:
+            checkpoint['n_temperatures'] = int(data['n_temperatures'])
+            checkpoint['temperature_ladder'] = data['temperature_ladder'].copy()
+            checkpoint['temp_assignments_A'] = data['temp_assignments_A'].copy()
+            checkpoint['temp_assignments_B'] = data['temp_assignments_B'].copy()
+            checkpoint['swap_accepts'] = data['swap_accepts'].copy()
+            checkpoint['swap_attempts'] = data['swap_attempts'].copy()
+
     return checkpoint
 
 
@@ -106,7 +133,7 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
         num_blocks: Number of parameter blocks
 
     Returns:
-        initial_carry: Tuple ready for MCMC scan
+        initial_carry: Tuple ready for MCMC scan (13 elements with tempering)
         user_config: Updated config with restored checkpoint values
     """
     # Import JAX here to avoid import at module level (keeps module lightweight)
@@ -133,6 +160,7 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
 
     dtype = runtime_ctx['jnp_float_dtype']
     num_chains = user_config['num_chains']
+    num_chains_a = user_config['num_chains_a']
     num_params = checkpoint['num_params']
 
     # Update user_config with checkpoint values
@@ -168,8 +196,43 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
     print(f"Resuming from checkpoint at iteration {checkpoint['iteration']} (resetting run counter to 0)")
     print(f"Structure: {K} Superchains × {M} Subchains")
 
-    initial_carry = (states_A, keys_A, states_B, keys_B,
-                     initial_history, initial_lik_history, acceptance_counts, current_iteration)
+    # Handle tempering state
+    n_temperatures = user_config.get('n_temperatures', 1)
+    if 'n_temperatures' in checkpoint:
+        # Restore tempering state from checkpoint
+        temperature_ladder = jnp.asarray(checkpoint['temperature_ladder'], dtype=dtype)
+        temp_assignments_A = jnp.asarray(checkpoint['temp_assignments_A'], dtype=jnp.int32)
+        temp_assignments_B = jnp.asarray(checkpoint['temp_assignments_B'], dtype=jnp.int32)
+        # Reset swap counts for this run
+        swap_accepts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
+        swap_attempts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
+        print(f"Parallel Tempering: {checkpoint['n_temperatures']} temperatures")
+    else:
+        # Create fresh tempering state (single temperature = no tempering)
+        if n_temperatures > 1:
+            # User wants tempering but checkpoint doesn't have it
+            # Create fresh temperature assignments
+            beta_min = user_config.get('beta_min', 0.1)
+            temp_indices = jnp.arange(n_temperatures)
+            temperature_ladder = jnp.power(beta_min, temp_indices / (n_temperatures - 1))
+            chains_per_temp = num_chains // n_temperatures
+            temp_assignments = jnp.repeat(jnp.arange(n_temperatures), chains_per_temp)
+            temp_assignments_A, temp_assignments_B = jnp.split(temp_assignments, [num_chains_a], axis=0)
+            print(f"Parallel Tempering: {n_temperatures} temperatures (fresh init)")
+        else:
+            temperature_ladder = jnp.array([1.0], dtype=dtype)
+            temp_assignments_A = jnp.zeros(num_chains_a, dtype=jnp.int32)
+            temp_assignments_B = jnp.zeros(num_chains - num_chains_a, dtype=jnp.int32)
+        swap_accepts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
+        swap_attempts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
+
+    # Extended carry tuple with tempering state
+    initial_carry = (
+        states_A, keys_A, states_B, keys_B,
+        initial_history, initial_lik_history, acceptance_counts, current_iteration,
+        temperature_ladder, temp_assignments_A, temp_assignments_B,
+        swap_accepts, swap_attempts
+    )
 
     return initial_carry, user_config
 

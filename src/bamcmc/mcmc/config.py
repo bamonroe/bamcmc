@@ -83,6 +83,26 @@ def validate_mcmc_inputs(config: Dict[str, Any], data: Dict[str, Any], specs: Li
         if total_params < 1:
             errors.append(f"Total parameters must be >= 1, got {total_params}")
 
+    # Parallel tempering validation
+    n_temperatures = config.get('n_temperatures', 1)
+    if n_temperatures < 1:
+        errors.append(f"n_temperatures must be >= 1, got {n_temperatures}")
+    if 'num_chains' in config and n_temperatures > 1:
+        num_chains = config['num_chains']
+        if num_chains % n_temperatures != 0:
+            errors.append(
+                f"num_chains ({num_chains}) must be divisible by n_temperatures ({n_temperatures})"
+            )
+        chains_per_temp = num_chains // n_temperatures
+        if chains_per_temp % 2 != 0:
+            errors.append(
+                f"chains_per_temperature ({chains_per_temp}) must be even for A/B groups"
+            )
+
+    beta_min = config.get('beta_min', 0.1)
+    if beta_min <= 0 or beta_min > 1:
+        errors.append(f"beta_min must be in (0, 1], got {beta_min}")
+
     if errors:
         error_msg = "MCMC Input Validation Failed:\n  " + "\n  ".join(errors)
         raise ValueError(error_msg)
@@ -152,6 +172,14 @@ def configure_mcmc_system(
         user_config['benchmark'] = mcmc_config['benchmark']
     if 'n_subjects' in mcmc_config:
         user_config['n_subjects'] = mcmc_config['n_subjects']
+
+    # Parallel tempering configuration
+    n_temperatures = mcmc_config.get('n_temperatures', 1)
+    beta_min = mcmc_config.get('beta_min', 0.1)
+    swap_every = mcmc_config.get('swap_every', 1)
+    user_config['n_temperatures'] = n_temperatures
+    user_config['beta_min'] = beta_min
+    user_config['swap_every'] = swap_every
 
     # Configure JAX precision
     if use_double:
@@ -323,11 +351,44 @@ def initialize_mcmc_system(
         # If M=1, we just use the K (which equals num_chains) states directly.
         pass
 
+    # --- PARALLEL TEMPERING SETUP ---
+    n_temperatures = user_config.get('n_temperatures', 1)
+    beta_min = user_config.get('beta_min', 0.1)
+    swap_every = user_config.get('swap_every', 1)
+
+    # Store tempering config in user_config (for checkpointing and diagnostics)
+    user_config['n_temperatures'] = int(n_temperatures)
+    user_config['beta_min'] = float(beta_min)
+    user_config['swap_every'] = int(swap_every)
+
+    if n_temperatures > 1:
+        # Create geometric temperature ladder: β_i = beta_min^(i/(n_temps-1))
+        # This gives [1.0, ..., beta_min] with geometric spacing
+        temp_indices = jnp.arange(n_temperatures)
+        temperature_ladder = jnp.power(beta_min, temp_indices / (n_temperatures - 1))
+        print(f"Parallel Tempering: {n_temperatures} temperatures")
+        print(f"  Temperature ladder: {[f'{t:.3f}' for t in temperature_ladder.tolist()]}")
+
+        # Assign temperatures to chains
+        # Chains are grouped by temperature: chains 0..C/T-1 at temp 0, etc.
+        chains_per_temp = num_chains // n_temperatures
+        user_config['chains_per_temp'] = int(chains_per_temp)
+
+        # Create temperature assignment array (which temperature index each chain has)
+        temp_assignments = jnp.repeat(jnp.arange(n_temperatures), chains_per_temp)
+    else:
+        temperature_ladder = jnp.array([1.0], dtype=jnp_float_dtype)
+        temp_assignments = jnp.zeros(num_chains, dtype=jnp.int32)
+        user_config['chains_per_temp'] = num_chains
+
     # Split for Red-Black sampler
     num_chains_a = user_config["num_chains_a"]
     all_keys_for_each_chain = random.split(init_key, num_chains)
     initial_states_A, initial_states_B = jnp.split(all_initial_states, [num_chains_a], axis=0)
     initial_keys_A, initial_keys_B = jnp.split(all_keys_for_each_chain, [num_chains_a], axis=0)
+
+    # Split temperature assignments for A/B groups
+    temp_assignments_A, temp_assignments_B = jnp.split(temp_assignments, [num_chains_a], axis=0)
 
     total_cols = num_params + num_gq
     initial_history = jnp.zeros((num_collect, num_chains, total_cols), dtype=jnp_float_dtype)
@@ -341,7 +402,19 @@ def initialize_mcmc_system(
     acceptance_counts = jnp.zeros(num_blocks, dtype=jnp.int32)
     current_iteration = jnp.array(0, dtype=jnp.int32)
 
-    initial_carry = (initial_states_A, initial_keys_A, initial_states_B, initial_keys_B,
-                     initial_history, initial_lik_history, acceptance_counts, current_iteration)
+    # Swap acceptance counts: track accepts/attempts per adjacent temperature pair
+    # Shape: (n_temperatures - 1,) for pairs (0,1), (1,2), ..., (n_temps-2, n_temps-1)
+    swap_accepts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
+    swap_attempts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
+
+    # Extended carry tuple with tempering state
+    # Original: (states_A, keys_A, states_B, keys_B, history, lik_history, acceptance_counts, iteration)
+    # New: add (temp_ladder, temp_assign_A, temp_assign_B, swap_accepts, swap_attempts)
+    initial_carry = (
+        initial_states_A, initial_keys_A, initial_states_B, initial_keys_B,
+        initial_history, initial_lik_history, acceptance_counts, current_iteration,
+        temperature_ladder, temp_assignments_A, temp_assignments_B,
+        swap_accepts, swap_attempts
+    )
 
     return initial_carry, user_config

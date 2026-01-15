@@ -34,7 +34,12 @@ from .compile import (
     benchmark_mcmc_sampler,
     CHUNK_SIZE,
 )
-from .diagnostics import compute_nested_rhat, compute_and_print_rhat, print_acceptance_summary
+from .diagnostics import (
+    compute_nested_rhat,
+    compute_and_print_rhat,
+    print_acceptance_summary,
+    print_swap_acceptance_summary,
+)
 
 # Import batch specs for sampler types
 from ..batch_specs import SamplerType
@@ -255,6 +260,14 @@ def _run_mcmc_iterations(
 
     print_acceptance_summary(block_specs, acceptance_rates_host)
 
+    # Print swap acceptance rates for parallel tempering
+    n_temperatures = user_config.get('n_temperatures', 1)
+    if n_temperatures > 1:
+        temperature_ladder = jax.device_get(current_carry[8])
+        swap_accepts = jax.device_get(current_carry[11])
+        swap_attempts = jax.device_get(current_carry[12])
+        print_swap_acceptance_summary(temperature_ladder, swap_accepts, swap_attempts)
+
     print(f"\n--- MCMC Run Summary ---")
     print(f"  Total Wall Time: {timedelta(seconds=int(wall_time))} ({wall_time:.2f}s)")
 
@@ -296,7 +309,7 @@ def _build_checkpoint(
     Build checkpoint dict from final MCMC carry state.
 
     Args:
-        final_carry: Final JAX carry tuple
+        final_carry: Final JAX carry tuple (13 elements with tempering)
         posterior_id: Posterior model identifier
         user_config: User configuration dict
 
@@ -309,7 +322,7 @@ def _build_checkpoint(
     iteration_offset = user_config.get('iteration_offset', 0)
     global_iteration = run_iteration + iteration_offset
 
-    return {
+    checkpoint = {
         'states_A': np.asarray(jax.device_get(final_carry[0])),
         'states_B': np.asarray(jax.device_get(final_carry[2])),
         'keys_A': np.asarray(jax.device_get(final_carry[1])),
@@ -323,6 +336,18 @@ def _build_checkpoint(
         'num_superchains': user_config.get('num_superchains', 0),
         'subchains_per_super': user_config.get('subchains_per_super', 0),
     }
+
+    # Add tempering state if using parallel tempering
+    n_temperatures = user_config.get('n_temperatures', 1)
+    if n_temperatures > 1:
+        checkpoint['n_temperatures'] = n_temperatures
+        checkpoint['temperature_ladder'] = np.asarray(jax.device_get(final_carry[8]))
+        checkpoint['temp_assignments_A'] = np.asarray(jax.device_get(final_carry[9]))
+        checkpoint['temp_assignments_B'] = np.asarray(jax.device_get(final_carry[10]))
+        checkpoint['swap_accepts'] = np.asarray(jax.device_get(final_carry[11]))
+        checkpoint['swap_attempts'] = np.asarray(jax.device_get(final_carry[12]))
+
+    return checkpoint
 
 
 def _build_results(

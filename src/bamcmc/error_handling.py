@@ -47,6 +47,28 @@ def validate_mcmc_config(mcmc_config):
         if mcmc_config['burn_iter'] < 0:
             errors.append("burn_iter must be >= 0")
 
+    if 'num_superchains' in mcmc_config:
+        if mcmc_config['num_superchains'] < 1:
+            errors.append("num_superchains must be >= 1")
+
+    # Parallel tempering validation
+    if 'n_temperatures' in mcmc_config:
+        n_temps = mcmc_config['n_temperatures']
+        if n_temps < 1:
+            errors.append("n_temperatures must be >= 1")
+
+        # Check that we have enough chains for the requested temperatures
+        total_chains = mcmc_config.get('num_chains_a', 0) + mcmc_config.get('num_chains_b', 0)
+        if total_chains > 0 and n_temps > total_chains:
+            errors.append(
+                f"n_temperatures ({n_temps}) cannot exceed total chains ({total_chains})"
+            )
+
+    if 'beta_min' in mcmc_config:
+        beta = mcmc_config['beta_min']
+        if beta <= 0 or beta > 1:
+            errors.append(f"beta_min must be in (0, 1], got {beta}")
+
     if errors:
         raise ValueError("Invalid MCMC configuration:\n  " + "\n  ".join(errors))
 

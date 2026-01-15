@@ -199,3 +199,45 @@ def print_acceptance_summary(block_specs: List, acceptance_rates_host: np.ndarra
         print(f"  WARNING: {low_count} block(s) have acceptance rate < 10%")
         if low_count <= 10:
             print(f"    Low blocks: {', '.join(low_labels)}")
+
+
+def print_swap_acceptance_summary(
+    temperature_ladder: np.ndarray,
+    swap_accepts: np.ndarray,
+    swap_attempts: np.ndarray
+) -> None:
+    """
+    Print summary statistics for parallel tempering swap acceptance rates.
+
+    Args:
+        temperature_ladder: Temperature values (n_temperatures,)
+        swap_accepts: Number of accepted swaps per temperature pair
+        swap_attempts: Number of attempted swaps per temperature pair
+    """
+    n_temperatures = len(temperature_ladder)
+    if n_temperatures <= 1:
+        return
+
+    print(f"\n--- Parallel Tempering Swap Rates ({n_temperatures} temperatures) ---")
+    print(f"  Temperature ladder: {', '.join(f'{t:.3f}' for t in temperature_ladder)}")
+
+    n_pairs = n_temperatures - 1
+    swap_rates = np.zeros(n_pairs)
+    for i in range(n_pairs):
+        if swap_attempts[i] > 0:
+            swap_rates[i] = swap_accepts[i] / swap_attempts[i]
+        else:
+            swap_rates[i] = 0.0
+
+        beta_i = temperature_ladder[i]
+        beta_j = temperature_ladder[i + 1]
+        print(f"  Pair ({beta_i:.3f} <-> {beta_j:.3f}): "
+              f"{swap_rates[i]:.1%} ({swap_accepts[i]}/{swap_attempts[i]})")
+
+    if n_pairs > 0:
+        print(f"  Mean swap rate: {np.mean(swap_rates):.1%}")
+
+    # Warn about low swap rates (should be 20-40% for good mixing)
+    low_swap_mask = (swap_rates < 0.10) & (swap_attempts > 0)
+    if np.any(low_swap_mask):
+        print(f"  WARNING: Some swap rates are < 10% - consider adjusting temperature spacing")
