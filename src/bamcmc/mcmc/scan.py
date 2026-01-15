@@ -106,7 +106,6 @@ def _save_with_gq(states_A, states_B, gq_fn, num_gq):
 def attempt_temperature_swaps(
     key,
     states_A, states_B,
-    temp_assignments_A, temp_assignments_B,
     temperature_ladder,
     log_post_fn,
     swap_accepts, swap_attempts
@@ -128,8 +127,6 @@ def attempt_temperature_swaps(
         key: JAX random key
         states_A: Chain states for group A (n_chains_a, n_params)
         states_B: Chain states for group B (n_chains_b, n_params)
-        temp_assignments_A: Temperature indices for group A (n_chains_a,)
-        temp_assignments_B: Temperature indices for group B (n_chains_b,)
         temperature_ladder: Temperature values (n_temperatures,)
         log_post_fn: Untempered log posterior function
         swap_accepts: Running count of accepted swaps per temp pair
@@ -153,10 +150,8 @@ def attempt_temperature_swaps(
     # E.g., with 32 chains and 4 temps: chains 0-7 at temp 0, 8-15 at temp 1, etc.
     chains_per_temp = n_chains // n_temperatures
 
-    # Compute untempered log-posteriors for all chains
-    # Use a dummy block index for full evaluation
-    all_indices = jnp.arange(all_states.shape[1])
-    log_posts = jax.vmap(lambda s: log_post_fn(s, all_indices))(all_states)
+    # Parameter indices for log posterior evaluation
+    all_param_indices = jnp.arange(all_states.shape[1])
 
     def swap_one_pair(carry, temp_idx):
         """Attempt swap between temperatures temp_idx and temp_idx+1."""
@@ -177,12 +172,13 @@ def attempt_temperature_swaps(
         chain_i = start_i + offset_i
         chain_j = start_j + offset_j
 
-        # Get temperatures and log posteriors
+        # Get temperatures
         beta_i = temperature_ladder[temp_idx]
         beta_j = temperature_ladder[temp_idx + 1]
 
-        log_pi_i = log_posts[chain_i]
-        log_pi_j = log_posts[chain_j]
+        # Compute log posteriors only for the two selected chains (not all chains)
+        log_pi_i = log_post_fn(current_states[chain_i], all_param_indices)
+        log_pi_j = log_post_fn(current_states[chain_j], all_param_indices)
 
         # Swap acceptance ratio
         # α = exp((β_i - β_j) × (log_π(θ_j) - log_π(θ_i)))
@@ -348,7 +344,6 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
         new_states_a, new_states_b, _, new_s_accepts, new_s_attempts = attempt_temperature_swaps(
             swap_key,
             states_a, states_b,
-            temp_assignments_A, temp_assignments_B,
             temperature_ladder,
             log_post_fn,
             s_accepts, s_attempts
