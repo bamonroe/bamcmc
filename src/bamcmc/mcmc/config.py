@@ -263,6 +263,14 @@ def configure_mcmc_system(
     if discrete_param_indices:
         print(f"Discrete parameters: {len(discrete_param_indices)} (excluded from R-hat)")
 
+    # Calculate number of chains to save (only beta=1 chains when tempering)
+    if n_temperatures > 1:
+        n_chains_to_save = num_chains // n_temperatures
+        print(f"Output filtering: saving {n_chains_to_save} beta=1 chains (of {num_chains} total)")
+    else:
+        n_chains_to_save = num_chains
+    user_config['n_chains_to_save'] = n_chains_to_save
+
     # Create RunParams as frozen dataclass for JAX static argument compatibility
     run_params = RunParams(
         BURN_ITER=burn_iter,
@@ -271,6 +279,7 @@ def configure_mcmc_system(
         NUM_GQ=num_gq,
         START_ITERATION=0,  # Set to checkpoint iteration when resuming
         SAVE_LIKELIHOODS=save_likelihoods,
+        N_CHAINS_TO_SAVE=n_chains_to_save,
     )
 
     model_context = {
@@ -390,12 +399,14 @@ def initialize_mcmc_system(
     # Split temperature assignments for A/B groups
     temp_assignments_A, temp_assignments_B = jnp.split(temp_assignments, [num_chains_a], axis=0)
 
+    # History array saves only beta=1 chains when tempering
+    n_chains_to_save = user_config.get('n_chains_to_save', num_chains)
     total_cols = num_params + num_gq
-    initial_history = jnp.zeros((num_collect, num_chains, total_cols), dtype=jnp_float_dtype)
+    initial_history = jnp.zeros((num_collect, n_chains_to_save, total_cols), dtype=jnp_float_dtype)
 
     if user_config['save_likelihoods']:
-        # 2D array (Iter, Chain) - Summed over blocks
-        initial_lik_history = jnp.empty((num_collect, num_chains), dtype=jnp_float_dtype)
+        # 2D array (Iter, Chain) - Summed over blocks (only beta=1 chains)
+        initial_lik_history = jnp.empty((num_collect, n_chains_to_save), dtype=jnp_float_dtype)
     else:
         initial_lik_history = jnp.empty((1,), dtype=jnp_float_dtype)
 

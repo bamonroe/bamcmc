@@ -1378,3 +1378,72 @@ class TestParallelTempering:
             np.testing.assert_array_equal(loaded['temp_assignments_B'], temp_assignments_B)
             np.testing.assert_array_equal(loaded['swap_accepts'], swap_accepts)
             np.testing.assert_array_equal(loaded['swap_attempts'], swap_attempts)
+
+    def test_output_filtering_beta1_chains(self):
+        """Test that history array is sized for beta=1 chains only when tempering."""
+        user_config = {
+            'num_chains': 16,
+            'num_chains_a': 8,
+            'num_chains_b': 8,
+            'num_superchains': 4,
+            'save_likelihoods': False,
+            'n_temperatures': 4,
+            'beta_min': 0.3,
+            'swap_every': 1,
+            'n_chains_to_save': 4,  # 16 chains / 4 temps = 4 beta=1 chains
+        }
+        master_key, init_key = gen_rng_keys(42)
+        runtime_ctx = {
+            'jnp_float_dtype': jnp.float32,
+            'init_key': init_key,
+            'master_key': master_key,
+        }
+
+        init_vec = np.random.randn(16).astype(np.float32)
+        num_collect = 10
+
+        carry, new_config = initialize_mcmc_system(
+            init_vec, user_config, runtime_ctx, num_gq=0, num_collect=num_collect, num_blocks=1
+        )
+
+        # History array is element 4 in carry
+        history = carry[4]
+
+        # Should have shape (num_collect, n_chains_to_save, num_params)
+        # With 16 chains and 4 temps, only 4 beta=1 chains should be saved
+        assert history.shape[0] == num_collect
+        assert history.shape[1] == 4  # Only beta=1 chains
+        assert new_config['n_chains_to_save'] == 4
+
+    def test_output_filtering_no_tempering(self):
+        """Test that all chains are saved when not using tempering."""
+        user_config = {
+            'num_chains': 8,
+            'num_chains_a': 4,
+            'num_chains_b': 4,
+            'num_superchains': 4,
+            'save_likelihoods': False,
+            'n_temperatures': 1,  # No tempering
+            'n_chains_to_save': 8,  # All chains saved
+        }
+        master_key, init_key = gen_rng_keys(42)
+        runtime_ctx = {
+            'jnp_float_dtype': jnp.float32,
+            'init_key': init_key,
+            'master_key': master_key,
+        }
+
+        init_vec = np.random.randn(8).astype(np.float32)
+        num_collect = 10
+
+        carry, new_config = initialize_mcmc_system(
+            init_vec, user_config, runtime_ctx, num_gq=0, num_collect=num_collect, num_blocks=1
+        )
+
+        # History array is element 4 in carry
+        history = carry[4]
+
+        # Should have shape (num_collect, num_chains, num_params) - all chains
+        assert history.shape[0] == num_collect
+        assert history.shape[1] == 8  # All chains saved
+        assert new_config['n_chains_to_save'] == 8

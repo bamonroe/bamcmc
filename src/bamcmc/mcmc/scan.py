@@ -93,14 +93,27 @@ def compute_block_statistics(
     return means, covs, coupled_blocks, block_modes
 
 
-def _save_with_gq(states_A, states_B, gq_fn, num_gq):
-    """Combine states and optionally compute generated quantities."""
+def _save_with_gq(states_A, states_B, gq_fn, num_gq, n_chains_to_save):
+    """Combine states, filter to beta=1 chains, and optionally compute generated quantities.
+
+    Args:
+        states_A: Chain states for group A (n_chains_a, n_params)
+        states_B: Chain states for group B (n_chains_b, n_params)
+        gq_fn: Generated quantities function (or None)
+        num_gq: Number of generated quantities
+        n_chains_to_save: Number of chains to save (beta=1 chains when tempering)
+
+    Returns:
+        Filtered states with optional GQ values (n_chains_to_save, n_params + num_gq)
+    """
     full_state = jnp.concatenate((states_A, states_B), axis=0)
+    # Filter to beta=1 chains (first n_chains_to_save chains)
+    filtered_state = full_state[:n_chains_to_save]
     if num_gq > 0 and gq_fn is not None:
-        gq_values = jax.vmap(gq_fn)(full_state)
-        return jnp.concatenate((full_state, gq_values), axis=1)
+        gq_values = jax.vmap(gq_fn)(filtered_state)
+        return jnp.concatenate((filtered_state, gq_values), axis=1)
     else:
-        return full_state
+        return filtered_state
 
 
 def attempt_temperature_swaps(
@@ -303,12 +316,14 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
         thin_iter = run_params['THIN_ITERATION']
         num_collect = run_params['NUM_COLLECT']
         num_gq = run_params['NUM_GQ']
+        n_chains_to_save = run_params.get('N_CHAINS_TO_SAVE', states_A.shape[0] + states_B.shape[0])
     else:
         start_iter = run_params.START_ITERATION
         burn_iter = run_params.BURN_ITER
         thin_iter = run_params.THIN_ITERATION
         num_collect = run_params.NUM_COLLECT
         num_gq = run_params.NUM_GQ
+        n_chains_to_save = run_params.N_CHAINS_TO_SAVE
 
     run_iteration = current_iteration - start_iter
     is_after_burn_in = (run_iteration >= burn_iter)
@@ -324,7 +339,7 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
 
         def save_params(h_array):
              return h_array.at[thin_idx].set(
-                _save_with_gq(next_states_A, next_states_B, gq_fn, num_gq)
+                _save_with_gq(next_states_A, next_states_B, gq_fn, num_gq, n_chains_to_save)
             )
 
         next_history = jax.lax.cond(should_save, save_params, lambda h: h, history_array)
@@ -334,7 +349,9 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
                 total_lps_A = jnp.sum(lps_A, axis=1)
                 total_lps_B = jnp.sum(lps_B, axis=1)
                 full_lps = jnp.concatenate((total_lps_A, total_lps_B), axis=0)
-                return l_array.at[thin_idx].set(full_lps)
+                # Filter to beta=1 chains (first n_chains_to_save)
+                filtered_lps = full_lps[:n_chains_to_save]
+                return l_array.at[thin_idx].set(filtered_lps)
 
             next_lik_history = jax.lax.cond(should_save, save_lik, lambda h: h, lik_history_array)
 

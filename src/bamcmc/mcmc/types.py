@@ -129,6 +129,7 @@ class RunParams:
     NUM_GQ: int
     START_ITERATION: int
     SAVE_LIKELIHOODS: bool
+    N_CHAINS_TO_SAVE: int  # Number of chains to save (beta=1 chains when tempering)
 
 
 def build_block_arrays(specs: List[BlockSpec], start_idx: int = 0) -> BlockArrays:
