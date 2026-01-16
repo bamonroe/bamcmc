@@ -251,8 +251,11 @@ def _run_mcmc_iterations(
     wall_time = end_run_time - start_run_time
 
     # Compute and display acceptance rates
-    final_acceptance_counts = current_carry[6]
-    total_iterations_run = current_carry[7]
+    # Carry indices (15-element structure):
+    #   7: acceptance_counts, 8: current_iteration, 9: temperature_ladder
+    #   12: swap_accepts, 13: swap_attempts
+    final_acceptance_counts = current_carry[7]
+    total_iterations_run = current_carry[8]
     num_chains = user_config["num_chains"]
     total_attempts_per_block = total_iterations_run * num_chains
     acceptance_rates = final_acceptance_counts / total_attempts_per_block
@@ -263,9 +266,9 @@ def _run_mcmc_iterations(
     # Print swap acceptance rates for parallel tempering
     n_temperatures = user_config.get('n_temperatures', 1)
     if n_temperatures > 1:
-        temperature_ladder = jax.device_get(current_carry[8])
-        swap_accepts = jax.device_get(current_carry[11])
-        swap_attempts = jax.device_get(current_carry[12])
+        temperature_ladder = jax.device_get(current_carry[9])
+        swap_accepts = jax.device_get(current_carry[12])
+        swap_attempts = jax.device_get(current_carry[13])
         print_swap_acceptance_summary(temperature_ladder, swap_accepts, swap_attempts)
 
     print(f"\n--- MCMC Run Summary ---")

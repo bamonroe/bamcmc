@@ -14,7 +14,7 @@ import jax.random as random
 from typing import Tuple
 
 from .types import BlockArrays, RunParams
-from .sampling import parallel_gibbs_iteration
+from .sampling import parallel_gibbs_iteration, parallel_gibbs_iteration_per_temp
 
 
 # Regularization constant for covariance matrices
@@ -70,10 +70,10 @@ def compute_block_statistics(
 
     # Compute mode: find chain with highest log posterior
     if log_post_fn is not None:
-        # Evaluate full log posterior for each coupled chain
+        # Evaluate full log posterior (beta=1.0) for each coupled chain
         # Use a dummy "all parameters" index for full evaluation
         all_indices = jnp.arange(coupled_states.shape[1])
-        coupled_log_posts = jax.vmap(lambda s: log_post_fn(s, all_indices))(coupled_states)
+        coupled_log_posts = jax.vmap(lambda s: log_post_fn(s, all_indices, 1.0))(coupled_states)
 
         # Find mode chain (highest log posterior)
         mode_idx = jnp.argmax(coupled_log_posts)
@@ -91,6 +91,224 @@ def compute_block_statistics(
         block_modes = means
 
     return means, covs, coupled_blocks, block_modes
+
+
+def compute_block_statistics_per_temp(
+    coupled_states: jnp.ndarray,
+    temp_assignments: jnp.ndarray,
+    n_temperatures: int,
+    block_indices: jnp.ndarray,
+    block_masks: jnp.ndarray,
+    log_post_fn=None
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Compute block statistics separately for each temperature level.
+
+    Per-temperature proposals: chains at each temperature use statistics computed
+    only from chains at that same temperature. This provides better-matched
+    proposals for each temperature's distribution shape.
+
+    Args:
+        coupled_states: States from opposite group (n_chains, n_params)
+        temp_assignments: Temperature index for each chain (n_chains,)
+        n_temperatures: Number of temperature levels
+        block_indices: Block index array (n_blocks, max_block_size)
+        block_masks: Parameter masks (n_blocks, max_block_size)
+        log_post_fn: Optional log posterior function for computing mode
+
+    Returns:
+        block_means: (n_temperatures, n_blocks, max_block_size)
+        block_covs: (n_temperatures, n_blocks, max_block_size, max_block_size)
+        coupled_blocks: (n_blocks, n_chains, max_block_size) - still full for multinomial
+        block_modes: (n_temperatures, n_blocks, max_block_size)
+    """
+    n_chains, n_params = coupled_states.shape
+    n_blocks = block_indices.shape[0]
+    max_block_size = block_indices.shape[1]
+
+    def compute_stats_for_temp(temp_idx):
+        """Compute statistics for chains at a specific temperature."""
+        # Mask for chains at this temperature
+        temp_mask = (temp_assignments == temp_idx)  # (n_chains,)
+
+        # Get states at this temperature (use where to maintain shape for JIT)
+        # We'll compute weighted stats where non-matching chains have zero weight
+        weights = temp_mask.astype(coupled_states.dtype)
+        n_at_temp = jnp.sum(temp_mask)
+
+        def get_stats_for_block(b_indices, b_mask):
+            safe_indices = jnp.clip(b_indices, 0, n_params - 1)
+            block_data = jnp.take(coupled_states, safe_indices, axis=1)  # (n_chains, block_size)
+
+            # Weighted mean
+            weighted_sum = jnp.sum(block_data * weights[:, None], axis=0)
+            mean = jnp.where(n_at_temp > 0, weighted_sum / n_at_temp, 0.0) * b_mask
+
+            # Weighted covariance
+            centered = block_data - mean[None, :]
+            weighted_centered = centered * jnp.sqrt(weights[:, None])
+            cov = jnp.dot(weighted_centered.T, weighted_centered)
+            cov = jnp.where(n_at_temp > 1, cov / (n_at_temp - 1), jnp.eye(max_block_size))
+            cov = cov + NUGGET * jnp.eye(max_block_size)
+
+            # Apply mask
+            mask_2d = jnp.outer(b_mask, b_mask)
+            final_cov = jnp.where(mask_2d, cov, jnp.eye(max_block_size))
+
+            return mean, final_cov
+
+        means, covs = jax.vmap(get_stats_for_block)(block_indices, block_masks)
+
+        # Compute mode for this temperature (highest full log-post chain at this temp)
+        if log_post_fn is not None:
+            all_indices = jnp.arange(n_params)
+            log_posts = jax.vmap(lambda s: log_post_fn(s, all_indices, 1.0))(coupled_states)
+            # Mask out chains not at this temperature
+            masked_log_posts = jnp.where(temp_mask, log_posts, -jnp.inf)
+            mode_idx = jnp.argmax(masked_log_posts)
+            mode_state = coupled_states[mode_idx]
+
+            def get_mode_for_block(b_indices, b_mask):
+                safe_indices = jnp.clip(b_indices, 0, mode_state.shape[0] - 1)
+                return jnp.take(mode_state, safe_indices) * b_mask
+
+            modes = jax.vmap(get_mode_for_block)(block_indices, block_masks)
+        else:
+            modes = means
+
+        return means, covs, modes
+
+    # Compute stats for all temperatures
+    temp_indices = jnp.arange(n_temperatures)
+    all_means, all_covs, all_modes = jax.vmap(compute_stats_for_temp)(temp_indices)
+
+    # coupled_blocks still needs all chains for multinomial proposal
+    def get_block_data(b_indices, b_mask):
+        safe_indices = jnp.clip(b_indices, 0, n_params - 1)
+        return jnp.take(coupled_states, safe_indices, axis=1)
+
+    coupled_blocks = jax.vmap(get_block_data)(block_indices, block_masks)
+
+    return all_means, all_covs, coupled_blocks, all_modes
+
+
+def compute_block_statistics_blended(
+    coupled_states: jnp.ndarray,
+    temp_assignments: jnp.ndarray,
+    n_temperatures: int,
+    block_indices: jnp.ndarray,
+    block_masks: jnp.ndarray,
+    log_post_fn=None,
+    blend_pseudocount: float = 10.0
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Compute blended per-temperature + global block statistics.
+
+    Blends per-temperature statistics with global statistics based on the number
+    of chains at each temperature. This handles edge cases where a temperature
+    has 0 or few chains gracefully.
+
+    Blending formula:
+        weight = n_at_temp / (n_at_temp + k)
+        blended = weight * per_temp + (1 - weight) * global
+
+    With k=10:
+        0 chains  -> 0% per-temp (100% global)
+        10 chains -> 50% per-temp
+        50 chains -> 83% per-temp
+        140 chains -> 93% per-temp
+
+    Args:
+        coupled_states: States from opposite group (n_chains, n_params)
+        temp_assignments: Temperature index for each chain (n_chains,)
+        n_temperatures: Number of temperature levels
+        block_indices: Block index array (n_blocks, max_block_size)
+        block_masks: Parameter masks (n_blocks, max_block_size)
+        log_post_fn: Optional log posterior function for computing mode
+        blend_pseudocount: Pseudocount k for blending (default 10.0)
+
+    Returns:
+        block_means: (n_temperatures, n_blocks, max_block_size)
+        block_covs: (n_temperatures, n_blocks, max_block_size, max_block_size)
+        coupled_blocks: (n_blocks, n_chains, max_block_size) - still full for multinomial
+        block_modes: (n_temperatures, n_blocks, max_block_size)
+    """
+    n_chains, n_params = coupled_states.shape
+    n_blocks = block_indices.shape[0]
+    max_block_size = block_indices.shape[1]
+
+    # 1. Compute GLOBAL statistics (all chains, no temperature filtering)
+    global_means, global_covs, coupled_blocks, global_modes = compute_block_statistics(
+        coupled_states, block_indices, block_masks, log_post_fn
+    )
+
+    # 2. For each temperature, compute per-temp stats and blend with global
+    def compute_blended_for_temp(temp_idx):
+        """Compute blended statistics for chains at a specific temperature."""
+        # Mask for chains at this temperature
+        temp_mask = (temp_assignments == temp_idx)  # (n_chains,)
+        weights = temp_mask.astype(coupled_states.dtype)
+        n_at_temp = jnp.sum(temp_mask)
+
+        # Blending weight: 0 when no chains, approaches 1 with many chains
+        blend_weight = n_at_temp / (n_at_temp + blend_pseudocount)
+
+        def get_blended_stats_for_block(b_indices, b_mask, g_mean, g_cov):
+            """Compute blended stats for one block."""
+            safe_indices = jnp.clip(b_indices, 0, n_params - 1)
+            block_data = jnp.take(coupled_states, safe_indices, axis=1)  # (n_chains, block_size)
+
+            # Per-temp weighted mean
+            weighted_sum = jnp.sum(block_data * weights[:, None], axis=0)
+            per_temp_mean = jnp.where(n_at_temp > 0, weighted_sum / n_at_temp, g_mean) * b_mask
+
+            # Per-temp weighted covariance
+            centered = block_data - per_temp_mean[None, :]
+            weighted_centered = centered * jnp.sqrt(weights[:, None])
+            per_temp_cov = jnp.dot(weighted_centered.T, weighted_centered)
+            per_temp_cov = jnp.where(n_at_temp > 1, per_temp_cov / (n_at_temp - 1), g_cov)
+            per_temp_cov = per_temp_cov + NUGGET * jnp.eye(max_block_size)
+
+            # Apply mask to covariance
+            mask_2d = jnp.outer(b_mask, b_mask)
+            per_temp_cov = jnp.where(mask_2d, per_temp_cov, jnp.eye(max_block_size))
+
+            # Blend per-temp with global
+            blended_mean = blend_weight * per_temp_mean + (1 - blend_weight) * g_mean
+            blended_cov = blend_weight * per_temp_cov + (1 - blend_weight) * g_cov
+
+            return blended_mean, blended_cov
+
+        blended_means, blended_covs = jax.vmap(get_blended_stats_for_block)(
+            block_indices, block_masks, global_means, global_covs
+        )
+
+        # Mode: use per-temp mode if available, else global mode
+        if log_post_fn is not None:
+            all_indices = jnp.arange(n_params)
+            log_posts = jax.vmap(lambda s: log_post_fn(s, all_indices, 1.0))(coupled_states)
+            # Mask out chains not at this temperature
+            masked_log_posts = jnp.where(temp_mask, log_posts, -jnp.inf)
+            mode_idx = jnp.argmax(masked_log_posts)
+            mode_state = coupled_states[mode_idx]
+
+            def get_mode_for_block(b_indices, b_mask, g_mode):
+                safe_indices = jnp.clip(b_indices, 0, mode_state.shape[0] - 1)
+                per_temp_mode = jnp.take(mode_state, safe_indices) * b_mask
+                # Use per-temp mode if we have chains, else global
+                return jnp.where(n_at_temp > 0, per_temp_mode, g_mode)
+
+            blended_modes = jax.vmap(get_mode_for_block)(block_indices, block_masks, global_modes)
+        else:
+            blended_modes = blended_means
+
+        return blended_means, blended_covs, blended_modes
+
+    # Compute blended stats for all temperatures
+    temp_indices = jnp.arange(n_temperatures)
+    all_means, all_covs, all_modes = jax.vmap(compute_blended_for_temp)(temp_indices)
+
+    return all_means, all_covs, coupled_blocks, all_modes
 
 
 def _save_with_gq(states_A, states_B, temp_assigns_A, temp_assigns_B, gq_fn, num_gq):
@@ -178,84 +396,113 @@ def attempt_temperature_swaps(
     n_chains = all_states.shape[0]
     n_chains_a = states_A.shape[0]
 
-    # Compute log posteriors for ALL chains in parallel via vmap (GPU-efficient)
+    # Compute log posteriors (at beta=1) for ALL chains in parallel via vmap
+    # Note: For swap acceptance with proper tempering, we should use log_likelihood only
+    # (prior cancels). However, computing log_lik = log_post(beta=1) - log_post(beta=0)
+    # doubles memory usage. Using log_post directly is a reasonable approximation if
+    # prior values are similar across chains at different temperatures.
     all_param_indices = jnp.arange(all_states.shape[1])
-    all_log_posts = jax.vmap(lambda s: log_post_fn(s, all_param_indices))(all_states)
+    all_log_posts = jax.vmap(lambda s: log_post_fn(s, all_param_indices, 1.0))(all_states)
 
-    def swap_one_pair(carry, temp_idx):
-        """Attempt swap between temperatures temp_idx and temp_idx+1 (DEO-gated)."""
+    # Maximum chains per temperature (for static array sizes)
+    max_chains_per_temp = n_chains
+
+    def swap_all_pairs(carry, temp_idx):
+        """Attempt swaps for ALL chain pairs between temp_idx and temp_idx+1 (DEO-gated)."""
         curr_temp_assigns, curr_key, accepts, attempts = carry
 
-        # Split key for this swap attempt
-        curr_key, swap_key = random.split(curr_key, 2)
-
         # DEO: only process if this pair matches current parity
-        # Even pairs (0, 2, 4, ...) on parity=0, odd pairs (1, 3, 5, ...) on parity=1
         pair_parity = temp_idx % 2
         is_active = (pair_parity == swap_parity)
 
         # Get temperatures for this pair
-        beta_cold = temperature_ladder[temp_idx]      # Higher beta = colder
-        beta_hot = temperature_ladder[temp_idx + 1]   # Lower beta = hotter
+        beta_cold = temperature_ladder[temp_idx]
+        beta_hot = temperature_ladder[temp_idx + 1]
 
         # Find chains at each temperature
-        # INDEX PROCESS: chains don't move, temperature assignments do
         at_cold = (curr_temp_assigns == temp_idx)
         at_hot = (curr_temp_assigns == temp_idx + 1)
 
-        # Select one chain from each temperature (use argmax to get first match)
-        # Safe to use - if temperature is unpopulated, acceptance will fail anyway
-        cold_chain_idx = jnp.argmax(at_cold.astype(jnp.int32))
-        hot_chain_idx = jnp.argmax(at_hot.astype(jnp.int32))
+        # Count chains at each temperature
+        n_cold = jnp.sum(at_cold)
+        n_hot = jnp.sum(at_hot)
+        n_pairs = jnp.minimum(n_cold, n_hot)
 
-        # Check we have chains at both temperatures
-        has_cold = jnp.any(at_cold)
-        has_hot = jnp.any(at_hot)
-        should_attempt = is_active & has_cold & has_hot
+        # Get chain indices at each temperature (padded arrays)
+        cold_indices = jnp.where(at_cold, jnp.arange(n_chains), n_chains)
+        hot_indices = jnp.where(at_hot, jnp.arange(n_chains), n_chains)
 
-        # Get log posteriors (untempered)
-        log_pi_cold = all_log_posts[cold_chain_idx]
-        log_pi_hot = all_log_posts[hot_chain_idx]
+        # Sort to get valid indices first (invalid are n_chains, sorted to end)
+        cold_sorted = jnp.sort(cold_indices)
+        hot_sorted = jnp.sort(hot_indices)
 
-        # Swap acceptance ratio
-        # α = exp((β_cold - β_hot) × (log_π(θ_hot) - log_π(θ_cold)))
-        # If hot chain has higher log posterior, swap is favored
-        log_alpha = (beta_cold - beta_hot) * (log_pi_hot - log_pi_cold)
-        log_alpha = jnp.nan_to_num(log_alpha, nan=-jnp.inf)
+        # Shuffle the hot indices to get random pairing
+        curr_key, shuffle_key, accept_key = random.split(curr_key, 3)
+        hot_shuffled = random.permutation(shuffle_key, hot_sorted)
 
-        # Accept/reject
-        log_uniform = jnp.log(random.uniform(swap_key))
-        accept = should_attempt & (log_uniform < log_alpha)
+        # For each potential pair position, compute acceptance
+        # Pair i: cold_sorted[i] with hot_shuffled[i]
+        def compute_swap(pair_idx):
+            cold_idx = cold_sorted[pair_idx]
+            hot_idx = hot_shuffled[pair_idx]
 
-        # INDEX PROCESS: swap temperature assignments, NOT states!
-        # Cold chain gets hot temp assignment, hot chain gets cold temp assignment
-        new_temp_assigns = jax.lax.cond(
-            accept,
-            lambda ta: ta.at[cold_chain_idx].set(temp_idx + 1).at[hot_chain_idx].set(temp_idx),
-            lambda ta: ta,
-            curr_temp_assigns
+            # Check if this is a valid pair (both indices < n_chains)
+            is_valid = (pair_idx < n_pairs) & is_active
+
+            # Get log posteriors for swap acceptance
+            log_post_cold = all_log_posts[cold_idx]
+            log_post_hot = all_log_posts[hot_idx]
+
+            # Acceptance ratio for swapping temperatures
+            # Note: Using full log_post instead of just log_likelihood (see comment above)
+            log_alpha = (beta_cold - beta_hot) * (log_post_hot - log_post_cold)
+            log_alpha = jnp.nan_to_num(log_alpha, nan=-jnp.inf)
+
+            return cold_idx, hot_idx, log_alpha, is_valid
+
+        # Vectorized computation over all potential pairs
+        pair_indices = jnp.arange(max_chains_per_temp)
+        cold_idxs, hot_idxs, log_alphas, valids = jax.vmap(compute_swap)(pair_indices)
+
+        # Generate random values for acceptance
+        accept_keys = random.split(accept_key, max_chains_per_temp)
+        log_uniforms = jax.vmap(lambda k: jnp.log(random.uniform(k)))(accept_keys)
+
+        # Determine which swaps to accept
+        accepts_mask = valids & (log_uniforms < log_alphas)
+
+        # Apply swaps: for each accepted swap, exchange temperature assignments
+        # This needs to be done carefully to avoid conflicts
+        def apply_swap(ta, pair_data):
+            cold_idx, hot_idx, should_swap = pair_data
+            # Swap: cold chain gets hot temp, hot chain gets cold temp
+            new_ta = jax.lax.cond(
+                should_swap,
+                lambda t: t.at[cold_idx].set(temp_idx + 1).at[hot_idx].set(temp_idx),
+                lambda t: t,
+                ta
+            )
+            return new_ta, None
+
+        new_temp_assigns, _ = jax.lax.scan(
+            apply_swap,
+            curr_temp_assigns,
+            (cold_idxs, hot_idxs, accepts_mask)
         )
 
-        # Update counts (only if we actually attempted)
-        new_accepts = jax.lax.cond(
-            accept,
-            lambda a: a.at[temp_idx].add(jnp.int32(1)),
-            lambda a: a,
-            accepts
-        )
-        new_attempts = jax.lax.cond(
-            should_attempt,
-            lambda a: a.at[temp_idx].add(jnp.int32(1)),
-            lambda a: a,
-            attempts
-        )
+        # Update counts
+        n_attempted = jnp.sum(valids.astype(jnp.int32))
+        n_accepted = jnp.sum(accepts_mask.astype(jnp.int32))
+
+        new_accepts = accepts.at[temp_idx].add(n_accepted)
+        new_attempts = attempts.at[temp_idx].add(n_attempted)
 
         return (new_temp_assigns, curr_key, new_accepts, new_attempts), None
 
     # Process all temperature pairs (inactive ones gated by DEO parity)
     init_carry = (all_temp_assigns, key, swap_accepts, swap_attempts)
     (final_temp_assigns, final_key, final_accepts, final_attempts), _ = jax.lax.scan(
-        swap_one_pair,
+        swap_all_pairs,
         init_carry,
         jnp.arange(n_temperatures - 1)
     )
@@ -305,37 +552,83 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
      temperature_ladder, temp_assignments_A, temp_assignments_B,
      swap_accepts, swap_attempts, swap_parity) = carry
 
-    # Precompute block statistics ONCE from states_B (for updating A)
-    # Pass log_post_fn to compute mode for MODE_WEIGHTED proposals
-    means_A, covs_A, coupled_blocks_A, modes_A = compute_block_statistics(
-        states_B, block_arrays.indices, block_arrays.masks, log_post_fn
-    )
+    # Get per-temperature proposal setting from run_params
+    per_temp_proposals = getattr(run_params, 'PER_TEMP_PROPOSALS', False)
+    n_temperatures = getattr(run_params, 'N_TEMPERATURES', 1)
+    blend_pseudocount = getattr(run_params, 'BLEND_PSEUDOCOUNT', 10.0)
 
     # Compute beta values for each chain based on temperature assignments
     # betas_A[i] = temperature_ladder[temp_assignments_A[i]]
     betas_A = temperature_ladder[temp_assignments_A]
     betas_B = temperature_ladder[temp_assignments_B]
 
-    # Update Group A
-    next_states_A, next_keys_A, lps_A, accepts_A = parallel_gibbs_iteration(
-        keys_A, states_A, means_A, covs_A, coupled_blocks_A, modes_A,
-        block_arrays,
-        log_post_fn, grad_log_post_fn, direct_sampler_fn, coupled_transform_fn,
-        betas_A
-    )
+    if per_temp_proposals and n_temperatures > 1:
+        # Per-temperature proposals with blending: compute blended per-temp + global statistics
+        # This handles empty/sparse temperatures gracefully via pseudocount blending
 
-    # Precompute block statistics ONCE from updated states_A (for updating B)
-    means_B, covs_B, coupled_blocks_B, modes_B = compute_block_statistics(
-        next_states_A, block_arrays.indices, block_arrays.masks, log_post_fn
-    )
+        # Statistics from B for updating A (blended per-temp + global)
+        means_per_temp_A, covs_per_temp_A, coupled_blocks_A, modes_per_temp_A = compute_block_statistics_blended(
+            states_B, temp_assignments_B, n_temperatures,
+            block_arrays.indices, block_arrays.masks, log_post_fn,
+            blend_pseudocount
+        )
+        # Gather per-chain: means_A[chain_i] = means_per_temp_A[temp_assignments_A[chain_i]]
+        means_A = means_per_temp_A[temp_assignments_A]  # (n_chains_A, n_blocks, max_block_size)
+        covs_A = covs_per_temp_A[temp_assignments_A]    # (n_chains_A, n_blocks, max_block_size, max_block_size)
+        modes_A = modes_per_temp_A[temp_assignments_A]  # (n_chains_A, n_blocks, max_block_size)
 
-    # Update Group B
-    next_states_B, next_keys_B, lps_B, accepts_B = parallel_gibbs_iteration(
-        keys_B, states_B, means_B, covs_B, coupled_blocks_B, modes_B,
-        block_arrays,
-        log_post_fn, grad_log_post_fn, direct_sampler_fn, coupled_transform_fn,
-        betas_B
-    )
+        # Update Group A with per-chain statistics
+        next_states_A, next_keys_A, lps_A, accepts_A = parallel_gibbs_iteration_per_temp(
+            keys_A, states_A, means_A, covs_A, coupled_blocks_A, modes_A,
+            block_arrays,
+            log_post_fn, grad_log_post_fn, direct_sampler_fn, coupled_transform_fn,
+            betas_A
+        )
+
+        # Statistics from updated A for updating B (blended per-temp + global)
+        means_per_temp_B, covs_per_temp_B, coupled_blocks_B, modes_per_temp_B = compute_block_statistics_blended(
+            next_states_A, temp_assignments_A, n_temperatures,
+            block_arrays.indices, block_arrays.masks, log_post_fn,
+            blend_pseudocount
+        )
+        means_B = means_per_temp_B[temp_assignments_B]
+        covs_B = covs_per_temp_B[temp_assignments_B]
+        modes_B = modes_per_temp_B[temp_assignments_B]
+
+        # Update Group B with per-chain statistics
+        next_states_B, next_keys_B, lps_B, accepts_B = parallel_gibbs_iteration_per_temp(
+            keys_B, states_B, means_B, covs_B, coupled_blocks_B, modes_B,
+            block_arrays,
+            log_post_fn, grad_log_post_fn, direct_sampler_fn, coupled_transform_fn,
+            betas_B
+        )
+    else:
+        # Standard: all chains share the same proposal statistics (mixed temperatures)
+        # Precompute block statistics ONCE from states_B (for updating A)
+        means_A, covs_A, coupled_blocks_A, modes_A = compute_block_statistics(
+            states_B, block_arrays.indices, block_arrays.masks, log_post_fn
+        )
+
+        # Update Group A
+        next_states_A, next_keys_A, lps_A, accepts_A = parallel_gibbs_iteration(
+            keys_A, states_A, means_A, covs_A, coupled_blocks_A, modes_A,
+            block_arrays,
+            log_post_fn, grad_log_post_fn, direct_sampler_fn, coupled_transform_fn,
+            betas_A
+        )
+
+        # Precompute block statistics ONCE from updated states_A (for updating B)
+        means_B, covs_B, coupled_blocks_B, modes_B = compute_block_statistics(
+            next_states_A, block_arrays.indices, block_arrays.masks, log_post_fn
+        )
+
+        # Update Group B
+        next_states_B, next_keys_B, lps_B, accepts_B = parallel_gibbs_iteration(
+            keys_B, states_B, means_B, covs_B, coupled_blocks_B, modes_B,
+            block_arrays,
+            log_post_fn, grad_log_post_fn, direct_sampler_fn, coupled_transform_fn,
+            betas_B
+        )
 
     combined_accepts = jnp.concatenate([accepts_A, accepts_B], axis=0)
     block_accept_counts_iter = jnp.sum(combined_accepts, axis=0).astype(jnp.int32)

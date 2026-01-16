@@ -266,7 +266,7 @@ def combine_batch_histories(batch_paths):
         history: Combined history array (total_samples, num_chains, num_cols)
         iterations: Combined iteration numbers (total_samples,)
         likelihoods: Combined likelihoods (total_samples, num_chains) or None
-        metadata: Dict with K, M, mcmc_config, batch_boundaries from first batch
+        metadata: Dict with K, M, mcmc_config, batch_boundaries, temperature_history
     """
     if not batch_paths:
         raise ValueError("No batch paths provided")
@@ -274,6 +274,7 @@ def combine_batch_histories(batch_paths):
     histories = []
     iterations_list = []
     likelihoods_list = []
+    temp_history_list = []
     batch_sizes = []  # Track size of each batch for boundaries
     metadata = None
 
@@ -294,6 +295,13 @@ def combine_batch_histories(batch_paths):
                 if lik is not None and not (isinstance(lik, np.ndarray) and lik.shape == (1,)):
                     likelihoods_list.append(lik.copy() if hasattr(lik, 'copy') else lik)
 
+            # Load temperature_history if present (index process parallel tempering)
+            if 'temperature_history' in data:
+                th = data['temperature_history']
+                # Check if it's a real temperature history (not placeholder)
+                if th is not None and th.ndim == 2 and th.shape[0] > 1:
+                    temp_history_list.append(th.copy())
+
             # Get metadata from first batch
             if metadata is None:
                 mcmc_config = data['mcmc_config'].item() if 'mcmc_config' in data else {}
@@ -313,6 +321,12 @@ def combine_batch_histories(batch_paths):
     if likelihoods_list:
         combined_likelihoods = np.concatenate(likelihoods_list, axis=0)
 
+    # Combine temperature history if present
+    combined_temp_history = None
+    if temp_history_list:
+        combined_temp_history = np.concatenate(temp_history_list, axis=0)
+        metadata['temperature_history'] = combined_temp_history
+
     # Compute batch boundaries (start indices for each batch)
     batch_boundaries = np.cumsum([0] + batch_sizes[:-1]).tolist()
     metadata['batch_boundaries'] = batch_boundaries
@@ -323,6 +337,8 @@ def combine_batch_histories(batch_paths):
     print(f"  Total samples: {combined_history.shape[0]}")
     print(f"  Iteration range: {combined_iterations[0]} - {combined_iterations[-1]}")
     print(f"  Batch boundaries: {batch_boundaries}")
+    if combined_temp_history is not None:
+        print(f"  Temperature history: {combined_temp_history.shape}")
 
     return combined_history, combined_iterations, combined_likelihoods, metadata
 

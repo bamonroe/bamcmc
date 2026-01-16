@@ -177,9 +177,13 @@ def configure_mcmc_system(
     n_temperatures = mcmc_config.get('n_temperatures', 1)
     beta_min = mcmc_config.get('beta_min', 0.1)
     swap_every = mcmc_config.get('swap_every', 1)
+    per_temp_proposals = mcmc_config.get('per_temp_proposals', False)
+    blend_pseudocount = mcmc_config.get('blend_pseudocount', 10.0)
     user_config['n_temperatures'] = n_temperatures
     user_config['beta_min'] = beta_min
     user_config['swap_every'] = swap_every
+    user_config['per_temp_proposals'] = per_temp_proposals
+    user_config['blend_pseudocount'] = blend_pseudocount
 
     # Configure JAX precision
     if use_double:
@@ -278,6 +282,9 @@ def configure_mcmc_system(
         START_ITERATION=0,  # Set to checkpoint iteration when resuming
         SAVE_LIKELIHOODS=save_likelihoods,
         N_CHAINS_TO_SAVE=n_chains_to_save,
+        PER_TEMP_PROPOSALS=per_temp_proposals,
+        N_TEMPERATURES=n_temperatures,
+        BLEND_PSEUDOCOUNT=blend_pseudocount,
     )
 
     model_context = {
@@ -380,12 +387,15 @@ def initialize_mcmc_system(
         print(f"  Temperature ladder: {[f'{t:.3f}' for t in temperature_ladder.tolist()]}")
 
         # Assign temperatures to chains
-        # Chains are grouped by temperature: chains 0..C/T-1 at temp 0, etc.
+        # IMPORTANT: Interleave temperatures so both A and B groups have all temps
+        # This is required for A/B coupled proposals to work (each group needs
+        # chains at all temperatures to compute per-temperature statistics)
         chains_per_temp = num_chains // n_temperatures
         user_config['chains_per_temp'] = int(chains_per_temp)
 
-        # Create temperature assignment array (which temperature index each chain has)
-        temp_assignments = jnp.repeat(jnp.arange(n_temperatures, dtype=int_dtype), chains_per_temp)
+        # Create temperature assignment array with interleaved pattern
+        # [0,1,2,3,4, 0,1,2,3,4, ...] so when split, both A and B have all temps
+        temp_assignments = jnp.tile(jnp.arange(n_temperatures, dtype=int_dtype), chains_per_temp)
     else:
         temperature_ladder = jnp.array([1.0], dtype=jnp_float_dtype)
         temp_assignments = jnp.zeros(num_chains, dtype=int_dtype)

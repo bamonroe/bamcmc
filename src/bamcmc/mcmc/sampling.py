@@ -310,16 +310,17 @@ def metropolis_block_step(operand, log_post_fn, grad_log_post_fn, used_proposal_
     # Check if proposal contains NaN/Inf - if so, force rejection
     proposal_is_finite = jnp.all(jnp.isfinite(actual_proposal_values))
 
-    lp_current  = log_post_fn(chain_state,  block_idx_vec)
-    lp_proposed = log_post_fn(proposed_state, block_idx_vec)
+    # Pass beta to log_post_fn - the posterior function handles tempering internally
+    # This implements π_β(θ) ∝ L(θ)^β × p(θ) where only likelihood is tempered
+    lp_current  = log_post_fn(chain_state,  block_idx_vec, beta)
+    lp_proposed = log_post_fn(proposed_state, block_idx_vec, beta)
 
     safe_lp_current  = jnp.nan_to_num(lp_current,  nan=-jnp.inf, posinf=-jnp.inf, neginf=-jnp.inf)
     safe_lp_proposed = jnp.nan_to_num(lp_proposed, nan=-jnp.inf, posinf=-jnp.inf, neginf=-jnp.inf)
 
-    # Apply tempering: scale the log-posterior ratio by beta
-    # This implements π_β(θ) ∝ π(θ)^β for parallel tempering
-    # When beta=1 (default), this has no effect
-    raw_ratio = log_den_ratio + beta * (safe_lp_proposed - safe_lp_current)
+    # No beta multiplication here - tempering is handled inside log_post_fn
+    # The posterior returns log_prior + beta * log_likelihood
+    raw_ratio = log_den_ratio + (safe_lp_proposed - safe_lp_current)
     # Force rejection if proposal contains NaN/Inf
     safe_ratio = jnp.where(proposal_is_finite,
                            jnp.nan_to_num(raw_ratio, nan=-jnp.inf),
@@ -567,6 +568,39 @@ def parallel_gibbs_iteration(keys, chain_states, block_means, block_covs, couple
         direct_sampler_fn: Direct sampler function
         coupled_transform_fn: Function for COUPLED_TRANSFORM blocks (or None)
         betas: Temperature values for each chain (n_chains,) - different per chain for tempering
+    """
+    return full_chain_iteration(keys, chain_states, block_means, block_covs, coupled_blocks, block_modes,
+                                block_arrays,
+                                log_post_fn, grad_log_post_fn, direct_sampler_fn, coupled_transform_fn,
+                                betas)
+
+
+# Per-temperature proposals: each chain gets its own temperature-specific statistics
+# in_axes=0 for block_means, block_covs, block_modes means each chain has its own stats
+@partial(jax.vmap, in_axes=(0, 0, 0, 0, None, 0, None, None, None, None, None, 0), out_axes=(0, 0, 0, 0))
+def parallel_gibbs_iteration_per_temp(keys, chain_states, block_means, block_covs, coupled_blocks, block_modes,
+                                       block_arrays: BlockArrays,
+                                       log_post_fn, grad_log_post_fn, direct_sampler_fn, coupled_transform_fn,
+                                       betas):
+    """
+    Run Gibbs iteration with per-chain (per-temperature) statistics.
+
+    This variant is used when per_temp_proposals=True. Each chain receives
+    statistics computed from chains at its same temperature level.
+
+    Args:
+        keys: Random keys for each chain (n_chains,)
+        chain_states: States of all chains in this group (n_chains, n_params)
+        block_means: Per-chain means (n_chains, n_blocks, max_block_size)
+        block_covs: Per-chain covariances (n_chains, n_blocks, max_block_size, max_block_size)
+        coupled_blocks: Raw block data (n_blocks, n_chains, max_block_size) - shared for multinomial
+        block_modes: Per-chain mode values (n_chains, n_blocks, max_block_size)
+        block_arrays: BlockArrays with all block configuration - shared across chains
+        log_post_fn: Log posterior function
+        grad_log_post_fn: Gradient of log posterior (for MALA proposals)
+        direct_sampler_fn: Direct sampler function
+        coupled_transform_fn: Function for COUPLED_TRANSFORM blocks (or None)
+        betas: Temperature values for each chain (n_chains,)
     """
     return full_chain_iteration(keys, chain_states, block_means, block_covs, coupled_blocks, block_modes,
                                 block_arrays,

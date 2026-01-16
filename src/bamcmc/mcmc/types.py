@@ -130,6 +130,9 @@ class RunParams:
     START_ITERATION: int
     SAVE_LIKELIHOODS: bool
     N_CHAINS_TO_SAVE: int  # Number of chains to save (beta=1 chains when tempering)
+    PER_TEMP_PROPOSALS: bool = False  # Per-temperature proposal statistics
+    N_TEMPERATURES: int = 1  # Number of temperature levels
+    BLEND_PSEUDOCOUNT: float = 10.0  # Pseudocount for blending per-temp + global stats
 
 
 def build_block_arrays(specs: List[BlockSpec], start_idx: int = 0) -> BlockArrays:

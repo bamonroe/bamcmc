@@ -109,13 +109,19 @@ def _run_mcmc_chunk(carry, data_int, data_float, data_static, block_arrays,
     coupled_transform_fn = model_config.get('coupled_transform_dispatch')
     gq_fn = model_config.get('generated_quantities')
 
-    # Bind data to log_post_fn
-    log_post_fn_bound = partial(log_post_fn, data=data)
+    # Bind data to log_post_fn, keeping beta as a passable argument
+    # The posterior signature is: log_posterior(chain_state, param_indices, data, beta=1.0)
+    # We bind data but leave beta unbound so callers can pass it for tempering
+    def log_post_fn_bound(chain_state, param_indices, beta=1.0):
+        return log_post_fn(chain_state, param_indices, data, beta)
 
     # Create gradient function for MALA proposals
     # jax.grad creates the derivative function (no computation yet)
     # Gradient is w.r.t. first argument (chain_state)
-    grad_log_post_fn = jax.grad(log_post_fn_bound, argnums=0)
+    # Note: gradient is computed at beta=1.0 (full posterior) for proposal direction
+    def log_post_fn_for_grad(chain_state, param_indices):
+        return log_post_fn(chain_state, param_indices, data, 1.0)
+    grad_log_post_fn = jax.grad(log_post_fn_for_grad, argnums=0)
 
     # Bind data to coupled_transform_fn if provided
     coupled_transform_fn_bound = None
