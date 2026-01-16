@@ -125,6 +125,13 @@ def compute_and_print_rhat(
     K = user_config['num_superchains']
     M = user_config['subchains_per_super']
 
+    # Adjust K for parallel tempering: only beta=1 chains are in history
+    n_temperatures = user_config.get('n_temperatures', 1)
+    if n_temperatures > 1:
+        K_effective = K // n_temperatures
+        print(f"  (Tempering active: using K={K_effective} of {K} superchains for beta=1 chains)")
+        K = K_effective
+
     nrhat_device = compute_nested_rhat(history_device, K, M)
     nrhat_values = jax.device_get(nrhat_device)
 

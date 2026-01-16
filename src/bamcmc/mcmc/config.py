@@ -370,10 +370,13 @@ def initialize_mcmc_system(
     user_config['beta_min'] = float(beta_min)
     user_config['swap_every'] = int(swap_every)
 
+    # Use int64 for temp assignments when x64 mode is enabled
+    int_dtype = jnp.int64 if jnp_float_dtype == jnp.float64 else jnp.int32
+
     if n_temperatures > 1:
         # Create geometric temperature ladder: β_i = beta_min^(i/(n_temps-1))
         # This gives [1.0, ..., beta_min] with geometric spacing
-        temp_indices = jnp.arange(n_temperatures)
+        temp_indices = jnp.arange(n_temperatures, dtype=int_dtype)
         temperature_ladder = jnp.power(beta_min, temp_indices / (n_temperatures - 1))
         print(f"Parallel Tempering: {n_temperatures} temperatures")
         print(f"  Temperature ladder: {[f'{t:.3f}' for t in temperature_ladder.tolist()]}")
@@ -384,10 +387,10 @@ def initialize_mcmc_system(
         user_config['chains_per_temp'] = int(chains_per_temp)
 
         # Create temperature assignment array (which temperature index each chain has)
-        temp_assignments = jnp.repeat(jnp.arange(n_temperatures), chains_per_temp)
+        temp_assignments = jnp.repeat(jnp.arange(n_temperatures, dtype=int_dtype), chains_per_temp)
     else:
         temperature_ladder = jnp.array([1.0], dtype=jnp_float_dtype)
-        temp_assignments = jnp.zeros(num_chains, dtype=jnp.int32)
+        temp_assignments = jnp.zeros(num_chains, dtype=int_dtype)
         user_config['chains_per_temp'] = num_chains
 
     # Split for Red-Black sampler

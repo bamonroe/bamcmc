@@ -176,11 +176,13 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
     keys_B = jnp.asarray(checkpoint['keys_B'], dtype=jnp.uint32)
 
     # Fresh history array for this run (use zeros to avoid uninitialized values)
+    # When tempering is active, only beta=1 chains are saved
+    n_chains_to_save = user_config.get('n_chains_to_save', num_chains)
     total_cols = num_params + num_gq
-    initial_history = jnp.zeros((num_collect, num_chains, total_cols), dtype=dtype)
+    initial_history = jnp.zeros((num_collect, n_chains_to_save, total_cols), dtype=dtype)
 
     if user_config['save_likelihoods']:
-        initial_lik_history = jnp.empty((num_collect, num_chains), dtype=dtype)
+        initial_lik_history = jnp.empty((num_collect, n_chains_to_save), dtype=dtype)
     else:
         initial_lik_history = jnp.empty((1,), dtype=dtype)
 
@@ -197,12 +199,14 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
     print(f"Structure: {K} Superchains × {M} Subchains")
 
     # Handle tempering state
+    # Use int64 for temp assignments when x64 mode is enabled (dtype is float64)
+    int_dtype = jnp.int64 if dtype == jnp.float64 else jnp.int32
     n_temperatures = user_config.get('n_temperatures', 1)
     if 'n_temperatures' in checkpoint:
         # Restore tempering state from checkpoint
         temperature_ladder = jnp.asarray(checkpoint['temperature_ladder'], dtype=dtype)
-        temp_assignments_A = jnp.asarray(checkpoint['temp_assignments_A'], dtype=jnp.int32)
-        temp_assignments_B = jnp.asarray(checkpoint['temp_assignments_B'], dtype=jnp.int32)
+        temp_assignments_A = jnp.asarray(checkpoint['temp_assignments_A'], dtype=int_dtype)
+        temp_assignments_B = jnp.asarray(checkpoint['temp_assignments_B'], dtype=int_dtype)
         # Reset swap counts for this run
         swap_accepts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
         swap_attempts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
@@ -213,16 +217,16 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
             # User wants tempering but checkpoint doesn't have it
             # Create fresh temperature assignments
             beta_min = user_config.get('beta_min', 0.1)
-            temp_indices = jnp.arange(n_temperatures)
+            temp_indices = jnp.arange(n_temperatures, dtype=int_dtype)
             temperature_ladder = jnp.power(beta_min, temp_indices / (n_temperatures - 1))
             chains_per_temp = num_chains // n_temperatures
-            temp_assignments = jnp.repeat(jnp.arange(n_temperatures), chains_per_temp)
+            temp_assignments = jnp.repeat(jnp.arange(n_temperatures, dtype=int_dtype), chains_per_temp)
             temp_assignments_A, temp_assignments_B = jnp.split(temp_assignments, [num_chains_a], axis=0)
             print(f"Parallel Tempering: {n_temperatures} temperatures (fresh init)")
         else:
             temperature_ladder = jnp.array([1.0], dtype=dtype)
-            temp_assignments_A = jnp.zeros(num_chains_a, dtype=jnp.int32)
-            temp_assignments_B = jnp.zeros(num_chains - num_chains_a, dtype=jnp.int32)
+            temp_assignments_A = jnp.zeros(num_chains_a, dtype=int_dtype)
+            temp_assignments_B = jnp.zeros(num_chains - num_chains_a, dtype=int_dtype)
         swap_accepts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
         swap_attempts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
 
