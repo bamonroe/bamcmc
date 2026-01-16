@@ -263,13 +263,11 @@ def configure_mcmc_system(
     if discrete_param_indices:
         print(f"Discrete parameters: {len(discrete_param_indices)} (excluded from R-hat)")
 
-    # Calculate number of chains to save (only beta=1 chains when tempering)
-    if n_temperatures > 1:
-        n_chains_to_save = num_chains // n_temperatures
-        print(f"Output filtering: saving {n_chains_to_save} beta=1 chains (of {num_chains} total)")
-    else:
-        n_chains_to_save = num_chains
+    # Index process: save ALL chains (users filter to beta=1 post-hoc via temp_history)
+    n_chains_to_save = num_chains
     user_config['n_chains_to_save'] = n_chains_to_save
+    if n_temperatures > 1:
+        print(f"Index process: saving all {num_chains} chains with temperature traces")
 
     # Create RunParams as frozen dataclass for JAX static argument compatibility
     run_params = RunParams(
@@ -402,16 +400,23 @@ def initialize_mcmc_system(
     # Split temperature assignments for A/B groups
     temp_assignments_A, temp_assignments_B = jnp.split(temp_assignments, [num_chains_a], axis=0)
 
-    # History array saves only beta=1 chains when tempering
+    # History array saves ALL chains (index process approach)
     n_chains_to_save = user_config.get('n_chains_to_save', num_chains)
     total_cols = num_params + num_gq
     initial_history = jnp.zeros((num_collect, n_chains_to_save, total_cols), dtype=jnp_float_dtype)
 
     if user_config['save_likelihoods']:
-        # 2D array (Iter, Chain) - Summed over blocks (only beta=1 chains)
+        # 2D array (Iter, Chain) - Summed over blocks (all chains)
         initial_lik_history = jnp.empty((num_collect, n_chains_to_save), dtype=jnp_float_dtype)
     else:
         initial_lik_history = jnp.empty((1,), dtype=jnp_float_dtype)
+
+    # Temperature history: track which temperature index each chain has at each saved iteration
+    # Shape: (num_collect, num_chains) - stores temperature index [0, n_temps-1]
+    if n_temperatures > 1:
+        initial_temp_history = jnp.zeros((num_collect, num_chains), dtype=int_dtype)
+    else:
+        initial_temp_history = jnp.empty((1,), dtype=int_dtype)  # Placeholder when not tempering
 
     acceptance_counts = jnp.zeros(num_blocks, dtype=jnp.int32)
     current_iteration = jnp.array(0, dtype=jnp.int32)
@@ -421,14 +426,21 @@ def initialize_mcmc_system(
     swap_accepts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
     swap_attempts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
 
-    # Extended carry tuple with tempering state
-    # Original: (states_A, keys_A, states_B, keys_B, history, lik_history, acceptance_counts, iteration)
-    # New: add (temp_ladder, temp_assign_A, temp_assign_B, swap_accepts, swap_attempts)
+    # DEO swap parity: 0 = even round (pairs 0-1, 2-3, ...), 1 = odd round (pairs 1-2, 3-4, ...)
+    swap_parity = jnp.array(0, dtype=jnp.int32)
+
+    # Extended carry tuple with index process tempering state (15 elements)
+    # 0-3: states_A, keys_A, states_B, keys_B
+    # 4-6: history, lik_history, temp_history (NEW)
+    # 7-8: acceptance_counts, current_iteration
+    # 9-12: temperature_ladder, temp_assignments_A, temp_assignments_B, swap_accepts, swap_attempts
+    # 14: swap_parity (NEW)
     initial_carry = (
         initial_states_A, initial_keys_A, initial_states_B, initial_keys_B,
-        initial_history, initial_lik_history, acceptance_counts, current_iteration,
+        initial_history, initial_lik_history, initial_temp_history,
+        acceptance_counts, current_iteration,
         temperature_ladder, temp_assignments_A, temp_assignments_B,
-        swap_accepts, swap_attempts
+        swap_accepts, swap_attempts, swap_parity
     )
 
     return initial_carry, user_config

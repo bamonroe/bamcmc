@@ -93,43 +93,56 @@ def compute_block_statistics(
     return means, covs, coupled_blocks, block_modes
 
 
-def _save_with_gq(states_A, states_B, gq_fn, num_gq, n_chains_to_save):
-    """Combine states, filter to beta=1 chains, and optionally compute generated quantities.
+def _save_with_gq(states_A, states_B, temp_assigns_A, temp_assigns_B, gq_fn, num_gq):
+    """Combine states, compute GQ for all chains, return with temperature indices.
+
+    INDEX PROCESS: Save ALL chains (no filtering). Users filter to beta=1 post-hoc
+    using the returned temperature assignments.
 
     Args:
         states_A: Chain states for group A (n_chains_a, n_params)
         states_B: Chain states for group B (n_chains_b, n_params)
+        temp_assigns_A: Temperature index per chain in A (n_chains_a,)
+        temp_assigns_B: Temperature index per chain in B (n_chains_b,)
         gq_fn: Generated quantities function (or None)
         num_gq: Number of generated quantities
-        n_chains_to_save: Number of chains to save (beta=1 chains when tempering)
 
     Returns:
-        Filtered states with optional GQ values (n_chains_to_save, n_params + num_gq)
+        states_with_gq: All chain states with GQ (n_chains, n_params + num_gq)
+        temp_indices: Temperature index per chain (n_chains,)
     """
     full_state = jnp.concatenate((states_A, states_B), axis=0)
-    # Filter to beta=1 chains (first n_chains_to_save chains)
-    filtered_state = full_state[:n_chains_to_save]
+    full_temp_assigns = jnp.concatenate((temp_assigns_A, temp_assigns_B), axis=0)
+
     if num_gq > 0 and gq_fn is not None:
-        gq_values = jax.vmap(gq_fn)(filtered_state)
-        return jnp.concatenate((filtered_state, gq_values), axis=1)
+        gq_values = jax.vmap(gq_fn)(full_state)
+        states_with_gq = jnp.concatenate((full_state, gq_values), axis=1)
     else:
-        return filtered_state
+        states_with_gq = full_state
+
+    return states_with_gq, full_temp_assigns
 
 
 def attempt_temperature_swaps(
     key,
     states_A, states_B,
+    temp_assignments_A, temp_assignments_B,
     temperature_ladder,
     log_post_fn,
-    swap_accepts, swap_attempts
+    swap_accepts, swap_attempts,
+    swap_parity
 ):
     """
-    Attempt replica exchange swaps between adjacent temperature levels.
+    Index process parallel tempering with DEO scheme (Syed et al. 2021).
 
-    For parallel tempering, after each MCMC iteration we attempt to swap states
-    between chains at adjacent temperatures. This allows high-temperature chains
-    (with flattened posteriors) to explore broadly, then swap good configurations
-    to low-temperature chains.
+    KEY DIFFERENCE from standard PT: We swap temperature ASSIGNMENTS, not chain states.
+    Each chain maintains its continuous parameter trace; only its temperature label changes.
+
+    DEO (Deterministic Even-Odd) Scheme:
+    - Even round (parity=0): attempt swaps for pairs (0,1), (2,3), (4,5), ...
+    - Odd round (parity=1): attempt swaps for pairs (1,2), (3,4), (5,6), ...
+    - This creates deterministic "conveyor belt" round trips through temperature space
+    - Reduces round-trip time from O(N²) to O(N) compared to stochastic SEO
 
     Swap acceptance probability between temperatures β_i and β_j (β_i > β_j):
         α = min(1, exp((β_i - β_j) × (log_π(θ_j) - log_π(θ_i))))
@@ -138,110 +151,124 @@ def attempt_temperature_swaps(
 
     Args:
         key: JAX random key
-        states_A: Chain states for group A (n_chains_a, n_params)
-        states_B: Chain states for group B (n_chains_b, n_params)
+        states_A: Chain states for group A (n_chains_a, n_params) - NOT modified
+        states_B: Chain states for group B (n_chains_b, n_params) - NOT modified
+        temp_assignments_A: Temperature index per chain in A (n_chains_a,)
+        temp_assignments_B: Temperature index per chain in B (n_chains_b,)
         temperature_ladder: Temperature values (n_temperatures,)
         log_post_fn: Untempered log posterior function
         swap_accepts: Running count of accepted swaps per temp pair
         swap_attempts: Running count of attempted swaps per temp pair
+        swap_parity: DEO parity (0 = even pairs, 1 = odd pairs)
 
     Returns:
-        Updated (states_A, states_B, key, swap_accepts, swap_attempts)
+        (temp_assignments_A, temp_assignments_B, key, swap_accepts, swap_attempts, next_parity)
+
+        Note: States are NOT returned - they don't change in the index process!
     """
     n_temperatures = temperature_ladder.shape[0]
 
     # If only one temperature, no swaps needed
     if n_temperatures <= 1:
-        return states_A, states_B, key, swap_accepts, swap_attempts
+        return temp_assignments_A, temp_assignments_B, key, swap_accepts, swap_attempts, swap_parity
 
-    # Combine A and B states for swapping
+    # Combine for unified processing
     all_states = jnp.concatenate([states_A, states_B], axis=0)
+    all_temp_assigns = jnp.concatenate([temp_assignments_A, temp_assignments_B], axis=0)
     n_chains = all_states.shape[0]
     n_chains_a = states_A.shape[0]
 
-    # Chains are assigned to temperatures in order: chains_per_temp chains per temperature
-    # E.g., with 32 chains and 4 temps: chains 0-7 at temp 0, 8-15 at temp 1, etc.
-    chains_per_temp = n_chains // n_temperatures
-
     # Compute log posteriors for ALL chains in parallel via vmap (GPU-efficient)
-    # We track these through swaps to keep them synchronized with states
     all_param_indices = jnp.arange(all_states.shape[1])
-    initial_log_posts = jax.vmap(lambda s: log_post_fn(s, all_param_indices))(all_states)
+    all_log_posts = jax.vmap(lambda s: log_post_fn(s, all_param_indices))(all_states)
 
     def swap_one_pair(carry, temp_idx):
-        """Attempt swap between temperatures temp_idx and temp_idx+1."""
-        current_states, current_log_posts, current_key, accepts, attempts = carry
+        """Attempt swap between temperatures temp_idx and temp_idx+1 (DEO-gated)."""
+        curr_temp_assigns, curr_key, accepts, attempts = carry
 
         # Split key for this swap attempt
-        current_key, swap_key, select_key_i, select_key_j = random.split(current_key, 4)
+        curr_key, swap_key = random.split(curr_key, 2)
 
-        # Compute start indices for chains at each temperature
-        # Chains are arranged: [temp0 chains][temp1 chains][temp2 chains]...
-        start_i = temp_idx * chains_per_temp
-        start_j = (temp_idx + 1) * chains_per_temp
+        # DEO: only process if this pair matches current parity
+        # Even pairs (0, 2, 4, ...) on parity=0, odd pairs (1, 3, 5, ...) on parity=1
+        pair_parity = temp_idx % 2
+        is_active = (pair_parity == swap_parity)
 
-        # Select random chain from each temperature group
-        offset_i = random.randint(select_key_i, (), 0, chains_per_temp)
-        offset_j = random.randint(select_key_j, (), 0, chains_per_temp)
+        # Get temperatures for this pair
+        beta_cold = temperature_ladder[temp_idx]      # Higher beta = colder
+        beta_hot = temperature_ladder[temp_idx + 1]   # Lower beta = hotter
 
-        chain_i = start_i + offset_i
-        chain_j = start_j + offset_j
+        # Find chains at each temperature
+        # INDEX PROCESS: chains don't move, temperature assignments do
+        at_cold = (curr_temp_assigns == temp_idx)
+        at_hot = (curr_temp_assigns == temp_idx + 1)
 
-        # Get temperatures
-        beta_i = temperature_ladder[temp_idx]
-        beta_j = temperature_ladder[temp_idx + 1]
+        # Select one chain from each temperature (use argmax to get first match)
+        # Safe to use - if temperature is unpopulated, acceptance will fail anyway
+        cold_chain_idx = jnp.argmax(at_cold.astype(jnp.int32))
+        hot_chain_idx = jnp.argmax(at_hot.astype(jnp.int32))
 
-        # Get log posteriors from tracked array (kept in sync with states)
-        log_pi_i = current_log_posts[chain_i]
-        log_pi_j = current_log_posts[chain_j]
+        # Check we have chains at both temperatures
+        has_cold = jnp.any(at_cold)
+        has_hot = jnp.any(at_hot)
+        should_attempt = is_active & has_cold & has_hot
+
+        # Get log posteriors (untempered)
+        log_pi_cold = all_log_posts[cold_chain_idx]
+        log_pi_hot = all_log_posts[hot_chain_idx]
 
         # Swap acceptance ratio
-        # α = exp((β_i - β_j) × (log_π(θ_j) - log_π(θ_i)))
-        # Note: β_i > β_j (colder temp has higher beta), so β_i - β_j > 0
-        log_alpha = (beta_i - beta_j) * (log_pi_j - log_pi_i)
+        # α = exp((β_cold - β_hot) × (log_π(θ_hot) - log_π(θ_cold)))
+        # If hot chain has higher log posterior, swap is favored
+        log_alpha = (beta_cold - beta_hot) * (log_pi_hot - log_pi_cold)
         log_alpha = jnp.nan_to_num(log_alpha, nan=-jnp.inf)
 
         # Accept/reject
         log_uniform = jnp.log(random.uniform(swap_key))
-        accept = log_uniform < log_alpha
+        accept = should_attempt & (log_uniform < log_alpha)
 
-        # Swap states if accepted
-        state_i = current_states[chain_i]
-        state_j = current_states[chain_j]
-        new_states = jax.lax.cond(
+        # INDEX PROCESS: swap temperature assignments, NOT states!
+        # Cold chain gets hot temp assignment, hot chain gets cold temp assignment
+        new_temp_assigns = jax.lax.cond(
             accept,
-            lambda s: s.at[chain_i].set(state_j).at[chain_j].set(state_i),
-            lambda s: s,
-            current_states
+            lambda ta: ta.at[cold_chain_idx].set(temp_idx + 1).at[hot_chain_idx].set(temp_idx),
+            lambda ta: ta,
+            curr_temp_assigns
         )
 
-        # Also swap log posteriors to keep them in sync with states
-        new_log_posts = jax.lax.cond(
+        # Update counts (only if we actually attempted)
+        new_accepts = jax.lax.cond(
             accept,
-            lambda lp: lp.at[chain_i].set(log_pi_j).at[chain_j].set(log_pi_i),
-            lambda lp: lp,
-            current_log_posts
+            lambda a: a.at[temp_idx].add(jnp.int32(1)),
+            lambda a: a,
+            accepts
+        )
+        new_attempts = jax.lax.cond(
+            should_attempt,
+            lambda a: a.at[temp_idx].add(jnp.int32(1)),
+            lambda a: a,
+            attempts
         )
 
-        # Update counts
-        new_accepts = accepts.at[temp_idx].add(jnp.int32(accept))
-        new_attempts = attempts.at[temp_idx].add(jnp.int32(1))
+        return (new_temp_assigns, curr_key, new_accepts, new_attempts), None
 
-        return (new_states, new_log_posts, current_key, new_accepts, new_attempts), None
-
-    # Attempt swaps for all adjacent temperature pairs
-    init_carry = (all_states, initial_log_posts, key, swap_accepts, swap_attempts)
-    (final_states, _, final_key, final_accepts, final_attempts), _ = jax.lax.scan(
+    # Process all temperature pairs (inactive ones gated by DEO parity)
+    init_carry = (all_temp_assigns, key, swap_accepts, swap_attempts)
+    (final_temp_assigns, final_key, final_accepts, final_attempts), _ = jax.lax.scan(
         swap_one_pair,
         init_carry,
         jnp.arange(n_temperatures - 1)
     )
 
-    # Split back into A and B groups
-    new_states_A = final_states[:n_chains_a]
-    new_states_B = final_states[n_chains_a:]
+    # Split temp assignments back into A and B groups
+    new_temp_assignments_A = final_temp_assigns[:n_chains_a]
+    new_temp_assignments_B = final_temp_assigns[n_chains_a:]
 
-    return new_states_A, new_states_B, final_key, final_accepts, final_attempts
+    # Toggle parity for next round (DEO: E→O→E→O→...)
+    next_parity = 1 - swap_parity
+
+    return (new_temp_assignments_A, new_temp_assignments_B, final_key,
+            final_accepts, final_attempts, next_parity)
 
 
 def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direct_sampler_fn,
@@ -252,25 +279,31 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
     This function updates both groups A and B in sequence.
     Block statistics (mean, cov) are precomputed ONCE before vmapping across chains.
 
-    Carry tuple structure (13 elements):
+    INDEX PROCESS: Temperature swaps modify temp_assignments, not states.
+    Each chain maintains a continuous parameter trace.
+
+    Carry tuple structure (15 elements):
         0: states_A - Chain states for group A
         1: keys_A - RNG keys for group A
         2: states_B - Chain states for group B
         3: keys_B - RNG keys for group B
-        4: history_array - Collected samples
+        4: history_array - Collected samples (all chains)
         5: lik_history_array - Likelihood history (if enabled)
-        6: acceptance_counts - Per-block acceptance counts
-        7: current_iteration - Current iteration number
-        8: temperature_ladder - Temperature values (n_temperatures,)
-        9: temp_assignments_A - Temperature indices for group A chains
-        10: temp_assignments_B - Temperature indices for group B chains
-        11: swap_accepts - Swap acceptance counts per temperature pair
-        12: swap_attempts - Swap attempt counts per temperature pair
+        6: temp_history_array - Temperature index per chain per saved iteration
+        7: acceptance_counts - Per-block acceptance counts
+        8: current_iteration - Current iteration number
+        9: temperature_ladder - Temperature values (n_temperatures,)
+        10: temp_assignments_A - Temperature indices for group A chains
+        11: temp_assignments_B - Temperature indices for group B chains
+        12: swap_accepts - Swap acceptance counts per temperature pair
+        13: swap_attempts - Swap attempt counts per temperature pair
+        14: swap_parity - DEO parity (0=even pairs, 1=odd pairs)
     """
-    (states_A, keys_A, states_B, keys_B, history_array, lik_history_array,
+    (states_A, keys_A, states_B, keys_B,
+     history_array, lik_history_array, temp_history_array,
      acceptance_counts, current_iteration,
      temperature_ladder, temp_assignments_A, temp_assignments_B,
-     swap_accepts, swap_attempts) = carry
+     swap_accepts, swap_attempts, swap_parity) = carry
 
     # Precompute block statistics ONCE from states_B (for updating A)
     # Pass log_post_fn to compute mode for MODE_WEIGHTED proposals
@@ -332,69 +365,91 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
 
     next_history = history_array
     next_lik_history = lik_history_array
+    next_temp_history = temp_history_array
 
     if num_collect > 0:
         thin_idx = collection_iteration // thin_iter
         should_save = is_after_burn_in & is_thin_iter & (thin_idx >= 0) & (thin_idx < num_collect)
 
-        def save_params(h_array):
-             return h_array.at[thin_idx].set(
-                _save_with_gq(next_states_A, next_states_B, gq_fn, num_gq, n_chains_to_save)
+        def save_history(h_array):
+            """Save states and GQ for all chains."""
+            states_with_gq, _ = _save_with_gq(
+                next_states_A, next_states_B,
+                temp_assignments_A, temp_assignments_B,
+                gq_fn, num_gq
             )
+            return h_array.at[thin_idx].set(states_with_gq)
 
-        next_history = jax.lax.cond(should_save, save_params, lambda h: h, history_array)
+        next_history = jax.lax.cond(should_save, save_history, lambda h: h, history_array)
+
+        # Save temperature history only if tempering is active (array has proper shape)
+        if temp_history_array.size > 1:
+            def save_temp(th_array):
+                _, temp_indices = _save_with_gq(
+                    next_states_A, next_states_B,
+                    temp_assignments_A, temp_assignments_B,
+                    gq_fn, num_gq
+                )
+                return th_array.at[thin_idx].set(temp_indices)
+
+            next_temp_history = jax.lax.cond(should_save, save_temp, lambda h: h, temp_history_array)
 
         if lik_history_array.size > 1:
             def save_lik(l_array):
                 total_lps_A = jnp.sum(lps_A, axis=1)
                 total_lps_B = jnp.sum(lps_B, axis=1)
+                # Save likelihoods for ALL chains (index process: no filtering)
                 full_lps = jnp.concatenate((total_lps_A, total_lps_B), axis=0)
-                # Filter to beta=1 chains (first n_chains_to_save)
-                filtered_lps = full_lps[:n_chains_to_save]
-                return l_array.at[thin_idx].set(filtered_lps)
+                return l_array.at[thin_idx].set(full_lps)
 
             next_lik_history = jax.lax.cond(should_save, save_lik, lambda h: h, lik_history_array)
 
     next_iteration = current_iteration + 1
 
-    # Attempt temperature swaps for parallel tempering
-    # This allows high-temperature chains to share good configurations with cold chains
+    # Attempt temperature swaps for parallel tempering (INDEX PROCESS with DEO)
+    # Swaps modify temperature assignments, not states - chains keep their traces
     n_temperatures = temperature_ladder.shape[0]
 
     def do_swaps(operand):
-        """Perform temperature swaps."""
-        states_a, states_b, keys_a, s_accepts, s_attempts = operand
+        """Perform temperature swaps (index process: swap assignments, not states)."""
+        temp_a, temp_b, keys_a, s_accepts, s_attempts, parity = operand
         # Use keys_A[0] for swap randomness, split to get new key
         swap_key, new_key_for_chain_0 = random.split(keys_a[0])
         keys_a = keys_a.at[0].set(new_key_for_chain_0)
 
-        new_states_a, new_states_b, _, new_s_accepts, new_s_attempts = attempt_temperature_swaps(
+        # Index process: states passed in but NOT modified, only temp assignments change
+        new_temp_a, new_temp_b, _, new_s_accepts, new_s_attempts, new_parity = attempt_temperature_swaps(
             swap_key,
-            states_a, states_b,
+            next_states_A, next_states_B,  # States for log posterior eval only
+            temp_a, temp_b,
             temperature_ladder,
             log_post_fn,
-            s_accepts, s_attempts
+            s_accepts, s_attempts, parity
         )
-        return new_states_a, new_states_b, keys_a, new_s_accepts, new_s_attempts
+        return new_temp_a, new_temp_b, keys_a, new_s_accepts, new_s_attempts, new_parity
 
     def skip_swaps(operand):
         """No swaps needed for single temperature."""
         return operand
 
     # Use lax.cond to handle both cases in JAX-traceable way
-    next_states_A, next_states_B, next_keys_A, swap_accepts, swap_attempts = jax.lax.cond(
+    # INDEX PROCESS: states don't change, only temperature assignments
+    (temp_assignments_A, temp_assignments_B, next_keys_A,
+     swap_accepts, swap_attempts, swap_parity) = jax.lax.cond(
         n_temperatures > 1,
         do_swaps,
         skip_swaps,
-        (next_states_A, next_states_B, next_keys_A, swap_accepts, swap_attempts)
+        (temp_assignments_A, temp_assignments_B, next_keys_A,
+         swap_accepts, swap_attempts, swap_parity)
     )
 
-    # Return extended carry tuple with temperature arrays
+    # Return extended carry tuple (15 elements) with index process state
     next_carry = (
         next_states_A, next_keys_A, next_states_B, next_keys_B,
-        next_history, next_lik_history, updated_acceptance_counts, next_iteration,
+        next_history, next_lik_history, next_temp_history,
+        updated_acceptance_counts, next_iteration,
         temperature_ladder, temp_assignments_A, temp_assignments_B,
-        swap_accepts, swap_attempts
+        swap_accepts, swap_attempts, swap_parity
     )
 
     return next_carry, None

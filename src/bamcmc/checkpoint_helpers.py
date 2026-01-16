@@ -176,7 +176,7 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
     keys_B = jnp.asarray(checkpoint['keys_B'], dtype=jnp.uint32)
 
     # Fresh history array for this run (use zeros to avoid uninitialized values)
-    # When tempering is active, only beta=1 chains are saved
+    # Index process: save ALL chains (users filter to beta=1 post-hoc via temp_history)
     n_chains_to_save = user_config.get('n_chains_to_save', num_chains)
     total_cols = num_params + num_gq
     initial_history = jnp.zeros((num_collect, n_chains_to_save, total_cols), dtype=dtype)
@@ -202,6 +202,13 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
     # Use int64 for temp assignments when x64 mode is enabled (dtype is float64)
     int_dtype = jnp.int64 if dtype == jnp.float64 else jnp.int32
     n_temperatures = user_config.get('n_temperatures', 1)
+
+    # Temperature history for index process (tracks temp index per chain per saved iteration)
+    if n_temperatures > 1:
+        initial_temp_history = jnp.zeros((num_collect, num_chains), dtype=int_dtype)
+    else:
+        initial_temp_history = jnp.empty((1,), dtype=int_dtype)
+
     if 'n_temperatures' in checkpoint:
         # Restore tempering state from checkpoint
         temperature_ladder = jnp.asarray(checkpoint['temperature_ladder'], dtype=dtype)
@@ -210,7 +217,9 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
         # Reset swap counts for this run
         swap_accepts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
         swap_attempts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
-        print(f"Parallel Tempering: {checkpoint['n_temperatures']} temperatures")
+        # Restore DEO parity if available, else default to 0 (even round)
+        swap_parity = jnp.array(checkpoint.get('swap_parity', 0), dtype=jnp.int32)
+        print(f"Parallel Tempering: {checkpoint['n_temperatures']} temperatures (DEO parity: {int(swap_parity)})")
     else:
         # Create fresh tempering state (single temperature = no tempering)
         if n_temperatures > 1:
@@ -229,13 +238,15 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
             temp_assignments_B = jnp.zeros(num_chains - num_chains_a, dtype=int_dtype)
         swap_accepts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
         swap_attempts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
+        swap_parity = jnp.array(0, dtype=jnp.int32)  # Start with even round
 
-    # Extended carry tuple with tempering state
+    # Extended carry tuple with index process tempering state (15 elements)
     initial_carry = (
         states_A, keys_A, states_B, keys_B,
-        initial_history, initial_lik_history, acceptance_counts, current_iteration,
+        initial_history, initial_lik_history, initial_temp_history,
+        acceptance_counts, current_iteration,
         temperature_ladder, temp_assignments_A, temp_assignments_B,
-        swap_accepts, swap_attempts
+        swap_accepts, swap_attempts, swap_parity
     )
 
     return initial_carry, user_config
@@ -285,11 +296,13 @@ def combine_batch_histories(batch_paths):
 
             # Get metadata from first batch
             if metadata is None:
+                mcmc_config = data['mcmc_config'].item() if 'mcmc_config' in data else {}
                 metadata = {
                     'K': int(data['K']),
                     'M': int(data['M']),
-                    'mcmc_config': data['mcmc_config'].item() if 'mcmc_config' in data else None,
+                    'mcmc_config': mcmc_config,
                     'thin_iteration': int(data['thin_iteration']) if 'thin_iteration' in data else 1,
+                    'n_temperatures': int(mcmc_config.get('n_temperatures', 1)) if mcmc_config else 1,
                 }
 
     # Concatenate along sample axis (axis=0)
@@ -342,7 +355,7 @@ def apply_burnin(history, iterations, likelihoods=None, min_iteration=0):
     return filtered_history, filtered_iterations, filtered_likelihoods
 
 
-def compute_rhat_from_history(history, K, M):
+def compute_rhat_from_history(history, K, M, n_temperatures=1):
     """
     Compute nested R-hat on combined/filtered history (CPU version).
 
@@ -353,11 +366,20 @@ def compute_rhat_from_history(history, K, M):
         history: Sample history (num_samples, num_chains, num_cols)
         K: Number of superchains
         M: Number of subchains per superchain
+        n_temperatures: Number of temperature levels (for parallel tempering)
+            When n_temperatures > 1, only beta=1 chains are in history,
+            so K_effective = K // n_temperatures
 
     Returns:
         rhat: R-hat values for each parameter (num_cols,)
     """
     n_samples, n_chains, n_cols = history.shape
+
+    # Adjust K for parallel tempering (only beta=1 chains are in history)
+    if n_temperatures > 1:
+        K_effective = K // n_temperatures
+        print(f"  (Tempering active: using K={K_effective} of {K} superchains for beta=1 chains)")
+        K = K_effective
 
     if n_chains != K * M:
         raise ValueError(f"Chain count {n_chains} doesn't match K={K} × M={M} = {K*M}")

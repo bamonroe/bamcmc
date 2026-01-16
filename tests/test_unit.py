@@ -1123,8 +1123,8 @@ class TestParallelTempering:
             init_vec, user_config, runtime_ctx, num_gq=0, num_collect=10, num_blocks=1
         )
 
-        # Temperature ladder is element 8 of carry tuple
-        temperature_ladder = np.array(carry[8])
+        # Temperature ladder is element 9 of carry tuple (15-element index process structure)
+        temperature_ladder = np.array(carry[9])
 
         # Expected: beta_min^(i/(n_temps-1)) for i=0,1,2,3
         # [1.0, 0.1^(1/3), 0.1^(2/3), 0.1]
@@ -1161,9 +1161,9 @@ class TestParallelTempering:
             init_vec, user_config, runtime_ctx, num_gq=0, num_collect=10, num_blocks=1
         )
 
-        # temp_assignments_A is element 9, temp_assignments_B is element 10
-        temp_assignments_A = np.array(carry[9])
-        temp_assignments_B = np.array(carry[10])
+        # temp_assignments_A is element 10, temp_assignments_B is element 11 (15-element structure)
+        temp_assignments_A = np.array(carry[10])
+        temp_assignments_B = np.array(carry[11])
 
         # With 8 chains total, 4 temperatures, we have 2 chains per temperature
         # temp_assignments = [0, 0, 1, 1, 2, 2, 3, 3] - chains grouped by temperature
@@ -1201,7 +1201,7 @@ class TestParallelTempering:
             init_vec, user_config, runtime_ctx, num_gq=0, num_collect=10, num_blocks=1
         )
 
-        temperature_ladder = np.array(carry[8])
+        temperature_ladder = np.array(carry[9])  # Index 9 in 15-element structure
 
         # Should be just [1.0] when n_temperatures=1
         assert len(temperature_ladder) == 1
@@ -1232,9 +1232,9 @@ class TestParallelTempering:
             init_vec, user_config, runtime_ctx, num_gq=0, num_collect=10, num_blocks=1
         )
 
-        # swap_accepts is element 11, swap_attempts is element 12
-        swap_accepts = np.array(carry[11])
-        swap_attempts = np.array(carry[12])
+        # swap_accepts is element 12, swap_attempts is element 13 (15-element structure)
+        swap_accepts = np.array(carry[12])
+        swap_attempts = np.array(carry[13])
 
         # Should have n_temperatures - 1 pairs
         assert len(swap_accepts) == 3
@@ -1270,8 +1270,8 @@ class TestParallelTempering:
         # Should default to n_temperatures=1 (no tempering)
         assert new_config['n_temperatures'] == 1
 
-        # Temperature ladder should be just [1.0]
-        temperature_ladder = np.array(carry[8])
+        # Temperature ladder should be just [1.0] (index 9 in 15-element structure)
+        temperature_ladder = np.array(carry[9])
         assert len(temperature_ladder) == 1
         assert temperature_ladder[0] == 1.0
 

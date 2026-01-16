@@ -9,7 +9,7 @@ Convergence diagnostics for MCMC chains:
 
 import time
 from functools import partial
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -109,6 +109,10 @@ def compute_and_print_rhat(
     """
     Compute Nested R-hat and print summary statistics.
 
+    INDEX PROCESS NOTE: With index process parallel tempering, ALL chains are saved
+    and chains traverse all temperatures. R-hat is computed on full traces.
+    For β=1-filtered analysis, use filter_beta1_samples() post-hoc with temp_history.
+
     Args:
         history_device: History array on device (JAX array)
         user_config: User configuration with K, M, and discrete_param_indices
@@ -125,12 +129,11 @@ def compute_and_print_rhat(
     K = user_config['num_superchains']
     M = user_config['subchains_per_super']
 
-    # Adjust K for parallel tempering: only beta=1 chains are in history
+    # Index process: all chains are saved, no K adjustment needed
     n_temperatures = user_config.get('n_temperatures', 1)
     if n_temperatures > 1:
-        K_effective = K // n_temperatures
-        print(f"  (Tempering active: using K={K_effective} of {K} superchains for beta=1 chains)")
-        K = K_effective
+        print(f"  (Index process: R-hat on full traces, {K} superchains × {M} subchains)")
+        print(f"  Use filter_beta1_samples() with temp_history for β=1-only analysis")
 
     nrhat_device = compute_nested_rhat(history_device, K, M)
     nrhat_values = jax.device_get(nrhat_device)
@@ -248,3 +251,146 @@ def print_swap_acceptance_summary(
     low_swap_mask = (swap_rates < 0.10) & (swap_attempts > 0)
     if np.any(low_swap_mask):
         print(f"  WARNING: Some swap rates are < 10% - consider adjusting temperature spacing")
+
+
+# =============================================================================
+# INDEX PROCESS UTILITIES
+# =============================================================================
+
+def filter_beta1_samples(
+    history: np.ndarray,
+    temp_history: np.ndarray,
+    target_temp_idx: int = 0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Filter history to only samples where chain was at target temperature.
+
+    INDEX PROCESS: With the index process, chains traverse all temperatures.
+    This function extracts only the samples where each chain was at the target
+    temperature (typically β=1 for posterior inference).
+
+    Args:
+        history: Sample history array (n_samples, n_chains, n_params)
+        temp_history: Temperature index per chain per sample (n_samples, n_chains)
+        target_temp_idx: Target temperature index (0 = β=1 coldest, default)
+
+    Returns:
+        filtered_history: Samples where chain was at target temp (variable shape)
+        sample_counts: Number of β=1 samples per chain (n_chains,)
+
+    Usage:
+        results = rmcmc_single(config, data)
+        history = results['history']
+        temp_history = results['temperature_history']
+        if temp_history is not None:
+            beta1_samples, counts = filter_beta1_samples(history, temp_history)
+            # beta1_samples is a list of arrays, one per chain
+    """
+    if temp_history is None:
+        return history, np.full(history.shape[1], history.shape[0])
+
+    n_samples, n_chains, n_params = history.shape
+    mask = (temp_history == target_temp_idx)  # (n_samples, n_chains)
+
+    # Count samples per chain at target temperature
+    sample_counts = np.sum(mask, axis=0)  # (n_chains,)
+
+    # For uniform output, find minimum count and truncate each chain to that
+    min_count = np.min(sample_counts)
+
+    if min_count == 0:
+        print(f"WARNING: Some chains have 0 samples at temperature index {target_temp_idx}")
+        print(f"  Sample counts range: {np.min(sample_counts)} to {np.max(sample_counts)}")
+        return None, sample_counts
+
+    # Build filtered array with uniform sample count per chain
+    filtered = np.zeros((min_count, n_chains, n_params), dtype=history.dtype)
+    for c in range(n_chains):
+        chain_mask = mask[:, c]
+        chain_samples = history[chain_mask, c, :]  # (count, n_params)
+        filtered[:, c, :] = chain_samples[:min_count]
+
+    return filtered, sample_counts
+
+
+def compute_round_trip_rate(
+    temp_history: np.ndarray,
+    n_temperatures: int,
+) -> Tuple[float, np.ndarray]:
+    """
+    Compute round-trip rate from temperature history.
+
+    A round trip is defined as: β=0 (temp_idx=N-1) → β=1 (temp_idx=0) → β=0.
+    This measures how effectively chains are exchanging information between
+    the hot (reference) and cold (target) distributions.
+
+    Args:
+        temp_history: Temperature index per chain per sample (n_samples, n_chains)
+        n_temperatures: Total number of temperature levels
+
+    Returns:
+        mean_rate: Mean round-trip rate across chains (round trips per sample)
+        per_chain_trips: Number of complete round trips per chain
+    """
+    if temp_history is None or n_temperatures <= 1:
+        return 0.0, np.array([])
+
+    n_samples, n_chains = temp_history.shape
+
+    # Count round trips for each chain
+    per_chain_trips = np.zeros(n_chains, dtype=np.int32)
+
+    for c in range(n_chains):
+        trace = temp_history[:, c]
+
+        # Track direction: are we going toward hot (increasing temp idx) or cold (decreasing)?
+        # A round trip completes when we touch both extremes
+        touched_cold = False
+        touched_hot = False
+        trips = 0
+
+        for temp_idx in trace:
+            if temp_idx == 0:  # Coldest (β=1)
+                if touched_hot:
+                    trips += 1  # Completed a trip from hot to cold
+                    touched_hot = False
+                touched_cold = True
+            elif temp_idx == n_temperatures - 1:  # Hottest (β=β_min)
+                if touched_cold:
+                    # Went from cold to hot, half a round trip
+                    pass
+                touched_hot = True
+
+        per_chain_trips[c] = trips
+
+    mean_rate = np.mean(per_chain_trips) / n_samples if n_samples > 0 else 0.0
+
+    return mean_rate, per_chain_trips
+
+
+def print_round_trip_summary(
+    temp_history: np.ndarray,
+    n_temperatures: int,
+) -> None:
+    """
+    Print summary statistics for index process round-trip behavior.
+
+    Args:
+        temp_history: Temperature index per chain per sample (n_samples, n_chains)
+        n_temperatures: Total number of temperature levels
+    """
+    if temp_history is None or n_temperatures <= 1:
+        return
+
+    mean_rate, per_chain_trips = compute_round_trip_rate(temp_history, n_temperatures)
+    n_samples, n_chains = temp_history.shape
+
+    print(f"\n--- Index Process Round-Trip Summary ({n_temperatures} temperatures) ---")
+    print(f"  Chains: {n_chains}")
+    print(f"  Samples: {n_samples}")
+    print(f"  Total round trips: {np.sum(per_chain_trips)}")
+    print(f"  Mean trips per chain: {np.mean(per_chain_trips):.1f}")
+    print(f"  Round-trip rate: {mean_rate:.4f} trips/sample")
+
+    if np.mean(per_chain_trips) < 1:
+        print(f"  WARNING: Low round-trip count - chains may not be mixing through temperatures")

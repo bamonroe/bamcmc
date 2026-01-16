@@ -277,27 +277,36 @@ def _run_mcmc_iterations(
 def _transfer_to_host(
     final_carry,
     save_likelihoods: bool,
-) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    n_temperatures: int = 1,
+) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
     """
     Transfer history arrays from device to host.
 
     Args:
-        final_carry: Final JAX carry tuple with arrays on device
+        final_carry: Final JAX carry tuple (15 elements) with arrays on device
         save_likelihoods: Whether to transfer likelihood history
+        n_temperatures: Number of temperature levels (for deciding temp_history)
 
     Returns:
         host_history: Sample history array on host
+        host_temp_history: Temperature history array (or None if not tempering)
         host_lik_history: Likelihood history (or None)
     """
     print("Transferring history to Host...", flush=True)
     host_history = jax.device_get(final_carry[4])
+
+    # Transfer temperature history if using parallel tempering
+    host_temp_history = None
+    if n_temperatures > 1:
+        print("Transferring temperature history to Host...", flush=True)
+        host_temp_history = jax.device_get(final_carry[6])
 
     host_lik_history = None
     if save_likelihoods:
         print("Transferring likelihood history to Host...", flush=True)
         host_lik_history = jax.device_get(final_carry[5])
 
-    return host_history, host_lik_history
+    return host_history, host_temp_history, host_lik_history
 
 
 def _build_checkpoint(
@@ -309,15 +318,22 @@ def _build_checkpoint(
     Build checkpoint dict from final MCMC carry state.
 
     Args:
-        final_carry: Final JAX carry tuple (13 elements with tempering)
+        final_carry: Final JAX carry tuple (15 elements with index process tempering)
         posterior_id: Posterior model identifier
         user_config: User configuration dict
 
     Returns:
         Checkpoint dict ready for saving
+
+    Carry tuple indices (15 elements):
+        0: states_A, 1: keys_A, 2: states_B, 3: keys_B
+        4: history, 5: lik_history, 6: temp_history
+        7: acceptance_counts, 8: current_iteration
+        9: temperature_ladder, 10: temp_assignments_A, 11: temp_assignments_B
+        12: swap_accepts, 13: swap_attempts, 14: swap_parity
     """
     # Run iteration (relative to this run's start)
-    run_iteration = int(jax.device_get(final_carry[7]))
+    run_iteration = int(jax.device_get(final_carry[8]))  # Index 8 in 15-element tuple
     # Add offset to get global iteration (for resume tracking)
     iteration_offset = user_config.get('iteration_offset', 0)
     global_iteration = run_iteration + iteration_offset
@@ -328,7 +344,7 @@ def _build_checkpoint(
         'keys_A': np.asarray(jax.device_get(final_carry[1])),
         'keys_B': np.asarray(jax.device_get(final_carry[3])),
         'iteration': global_iteration,
-        'acceptance_counts': np.asarray(jax.device_get(final_carry[6])),
+        'acceptance_counts': np.asarray(jax.device_get(final_carry[7])),  # Index 7
         'posterior_id': posterior_id,
         'num_params': user_config['num_params'],
         'num_chains_a': user_config['num_chains_a'],
@@ -337,21 +353,23 @@ def _build_checkpoint(
         'subchains_per_super': user_config.get('subchains_per_super', 0),
     }
 
-    # Add tempering state if using parallel tempering
+    # Add tempering state if using parallel tempering (index process)
     n_temperatures = user_config.get('n_temperatures', 1)
     if n_temperatures > 1:
         checkpoint['n_temperatures'] = n_temperatures
-        checkpoint['temperature_ladder'] = np.asarray(jax.device_get(final_carry[8]))
-        checkpoint['temp_assignments_A'] = np.asarray(jax.device_get(final_carry[9]))
-        checkpoint['temp_assignments_B'] = np.asarray(jax.device_get(final_carry[10]))
-        checkpoint['swap_accepts'] = np.asarray(jax.device_get(final_carry[11]))
-        checkpoint['swap_attempts'] = np.asarray(jax.device_get(final_carry[12]))
+        checkpoint['temperature_ladder'] = np.asarray(jax.device_get(final_carry[9]))
+        checkpoint['temp_assignments_A'] = np.asarray(jax.device_get(final_carry[10]))
+        checkpoint['temp_assignments_B'] = np.asarray(jax.device_get(final_carry[11]))
+        checkpoint['swap_accepts'] = np.asarray(jax.device_get(final_carry[12]))
+        checkpoint['swap_attempts'] = np.asarray(jax.device_get(final_carry[13]))
+        checkpoint['swap_parity'] = int(jax.device_get(final_carry[14]))  # NEW: DEO parity
 
     return checkpoint
 
 
 def _build_results(
     host_history: Optional[np.ndarray],
+    host_temp_history: Optional[np.ndarray],
     host_lik_history: Optional[np.ndarray],
     nrhat_values: Optional[np.ndarray],
     user_config: Dict[str, Any],
@@ -365,7 +383,8 @@ def _build_results(
     Build final results dict from sampling outputs.
 
     Args:
-        host_history: Sample history array
+        host_history: Sample history array (all chains)
+        host_temp_history: Temperature history array (or None if not tempering)
         host_lik_history: Likelihood history (or None)
         nrhat_values: R-hat values (or None)
         user_config: User configuration
@@ -376,7 +395,7 @@ def _build_results(
         final_iteration: Final iteration number
 
     Returns:
-        Results dict with all sampling outputs
+        Results dict with all sampling outputs including temperature_history
     """
     # Build diagnostics dict
     diagnostics = {
@@ -400,6 +419,7 @@ def _build_results(
 
     return {
         'history': host_history,
+        'temperature_history': host_temp_history,  # NEW: temperature index per chain per sample
         'iterations': iterations,
         'diagnostics': diagnostics,
         'mcmc_config': user_config,
@@ -577,8 +597,9 @@ def rmcmc_single(
             nrhat_values = compute_and_print_rhat(final_carry[4], user_config)
 
         # --- 8. TRANSFER TO HOST ---
-        host_history, host_lik_history = _transfer_to_host(
-            final_carry, user_config['save_likelihoods']
+        n_temperatures = user_config.get('n_temperatures', 1)
+        host_history, host_temp_history, host_lik_history = _transfer_to_host(
+            final_carry, user_config['save_likelihoods'], n_temperatures
         )
     else:
         # No iterations to run
@@ -586,8 +607,9 @@ def rmcmc_single(
         final_carry = initial_carry
         wall_time = 0.0
         nrhat_values = None
-        host_history, host_lik_history = _transfer_to_host(
-            initial_carry, user_config['save_likelihoods']
+        n_temperatures = user_config.get('n_temperatures', 1)
+        host_history, host_temp_history, host_lik_history = _transfer_to_host(
+            initial_carry, user_config['save_likelihoods'], n_temperatures
         )
 
     # --- 9. POST-RUN DIAGNOSTICS ---
@@ -616,6 +638,7 @@ def rmcmc_single(
 
     results = _build_results(
         host_history=host_history,
+        host_temp_history=host_temp_history,
         host_lik_history=host_lik_history,
         nrhat_values=nrhat_values,
         user_config=user_config,
