@@ -379,8 +379,9 @@ def scan_checkpoints(output_dir: str, model_name: str):
     history_files = []
 
     if output_path.exists():
-        # Pattern: {model}_checkpoint{N}.npz
-        checkpoint_pattern = re.compile(rf'^{re.escape(model_name)}_checkpoint(\d+)\.npz$')
+        # Pattern: {model}_checkpoint{N}.npz or {model}_checkpoint{N}_suffix.npz
+        # Matches: model_checkpoint0.npz, model_checkpoint1.npz, model_checkpoint0_reset.npz
+        checkpoint_pattern = re.compile(rf'^{re.escape(model_name)}_checkpoint(\d+)(_[a-z]+)?\.npz$')
         # Pattern: {model}_history_{NNN}.npz
         history_pattern = re.compile(rf'^{re.escape(model_name)}_history_(\d+)\.npz$')
 
