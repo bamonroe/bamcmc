@@ -30,13 +30,16 @@ def save_checkpoint(filepath, carry, user_config, metadata=None):
         - Config needed for validation on resume
         - Tempering state (if n_temperatures > 1)
     """
-    # Unpack carry tuple - supports both old (8 elements) and new (13 elements) format
+    # Unpack carry tuple (15 elements for index process parallel tempering)
+    # Structure: states_A, keys_A, states_B, keys_B, history, lik_history, temp_history,
+    #            acceptance_counts, iteration, temperature_ladder, temp_A, temp_B,
+    #            swap_accepts, swap_attempts, swap_parity
     states_A = carry[0]
     keys_A = carry[1]
     states_B = carry[2]
     keys_B = carry[3]
-    acceptance_counts = carry[6]
-    iteration = carry[7]
+    acceptance_counts = carry[7]
+    iteration = carry[8]
 
     checkpoint = {
         'states_A': np.asarray(states_A),
@@ -56,13 +59,14 @@ def save_checkpoint(filepath, carry, user_config, metadata=None):
 
     # Add tempering state if using parallel tempering
     n_temperatures = user_config.get('n_temperatures', 1)
-    if n_temperatures > 1 and len(carry) > 8:
+    if n_temperatures > 1 and len(carry) >= 15:
         checkpoint['n_temperatures'] = n_temperatures
-        checkpoint['temperature_ladder'] = np.asarray(carry[8])
-        checkpoint['temp_assignments_A'] = np.asarray(carry[9])
-        checkpoint['temp_assignments_B'] = np.asarray(carry[10])
-        checkpoint['swap_accepts'] = np.asarray(carry[11])
-        checkpoint['swap_attempts'] = np.asarray(carry[12])
+        checkpoint['temperature_ladder'] = np.asarray(carry[9])
+        checkpoint['temp_assignments_A'] = np.asarray(carry[10])
+        checkpoint['temp_assignments_B'] = np.asarray(carry[11])
+        checkpoint['swap_accepts'] = np.asarray(carry[12])
+        checkpoint['swap_attempts'] = np.asarray(carry[13])
+        checkpoint['swap_parity'] = int(carry[14])
 
     if metadata:
         checkpoint['metadata'] = metadata
