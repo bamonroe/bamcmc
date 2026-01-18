@@ -133,6 +133,7 @@ class RunParams:
     PER_TEMP_PROPOSALS: bool = False  # Per-temperature proposal statistics
     N_TEMPERATURES: int = 1  # Number of temperature levels
     BLEND_PSEUDOCOUNT: float = 10.0  # Pseudocount for blending per-temp + global stats
+    USE_DEO: bool = True  # Use DEO scheme for parallel tempering swaps
 
 
 def build_block_arrays(specs: List[BlockSpec], start_idx: int = 0) -> BlockArrays:

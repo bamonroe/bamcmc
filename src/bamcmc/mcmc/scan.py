@@ -348,19 +348,22 @@ def attempt_temperature_swaps(
     temperature_ladder,
     log_post_fn,
     swap_accepts, swap_attempts,
-    swap_parity
+    swap_parity,
+    use_deo=True
 ):
     """
-    Index process parallel tempering with DEO scheme (Syed et al. 2021).
+    Index process parallel tempering with optional DEO scheme (Syed et al. 2021).
 
     KEY DIFFERENCE from standard PT: We swap temperature ASSIGNMENTS, not chain states.
     Each chain maintains its continuous parameter trace; only its temperature label changes.
 
-    DEO (Deterministic Even-Odd) Scheme:
+    DEO (Deterministic Even-Odd) Scheme (when use_deo=True):
     - Even round (parity=0): attempt swaps for pairs (0,1), (2,3), (4,5), ...
     - Odd round (parity=1): attempt swaps for pairs (1,2), (3,4), (5,6), ...
     - This creates deterministic "conveyor belt" round trips through temperature space
     - Reduces round-trip time from O(N²) to O(N) compared to stochastic SEO
+
+    When use_deo=False: All pairs attempt swaps every iteration (no parity gating).
 
     Swap acceptance probability between temperatures β_i and β_j (β_i > β_j):
         α = min(1, exp((β_i - β_j) × (log_π(θ_j) - log_π(θ_i))))
@@ -378,6 +381,7 @@ def attempt_temperature_swaps(
         swap_accepts: Running count of accepted swaps per temp pair
         swap_attempts: Running count of attempted swaps per temp pair
         swap_parity: DEO parity (0 = even pairs, 1 = odd pairs)
+        use_deo: If True, use DEO scheme; if False, all pairs swap every iteration
 
     Returns:
         (temp_assignments_A, temp_assignments_B, key, swap_accepts, swap_attempts, next_parity)
@@ -396,13 +400,19 @@ def attempt_temperature_swaps(
     n_chains = all_states.shape[0]
     n_chains_a = states_A.shape[0]
 
-    # Compute log posteriors (at beta=1) for ALL chains in parallel via vmap
-    # Note: For swap acceptance with proper tempering, we should use log_likelihood only
-    # (prior cancels). However, computing log_lik = log_post(beta=1) - log_post(beta=0)
-    # doubles memory usage. Using log_post directly is a reasonable approximation if
-    # prior values are similar across chains at different temperatures.
+    # Compute log likelihoods for swap acceptance
+    # PT swap acceptance should use log_likelihood only (priors cancel out):
+    #   log_alpha = (beta_cold - beta_hot) * (log_lik_hot - log_lik_cold)
+    # We compute log_lik = log_post(beta=1) - log_post(beta=0) inside vmap for memory efficiency
     all_param_indices = jnp.arange(all_states.shape[1])
-    all_log_posts = jax.vmap(lambda s: log_post_fn(s, all_param_indices, 1.0))(all_states)
+
+    def compute_log_lik(state):
+        """Compute log likelihood = log_post(beta=1) - log_post(beta=0)."""
+        log_post_1 = log_post_fn(state, all_param_indices, 1.0)
+        log_post_0 = log_post_fn(state, all_param_indices, 0.0)
+        return log_post_1 - log_post_0
+
+    all_log_liks = jax.vmap(compute_log_lik)(all_states)
 
     # Maximum chains per temperature (for static array sizes)
     max_chains_per_temp = n_chains
@@ -411,9 +421,14 @@ def attempt_temperature_swaps(
         """Attempt swaps for ALL chain pairs between temp_idx and temp_idx+1 (DEO-gated)."""
         curr_temp_assigns, curr_key, accepts, attempts = carry
 
-        # DEO: only process if this pair matches current parity
+        # DEO: only process if this pair matches current parity (when use_deo=True)
+        # When use_deo=False, all pairs are active every iteration
         pair_parity = temp_idx % 2
-        is_active = (pair_parity == swap_parity)
+        is_active = jax.lax.cond(
+            use_deo,
+            lambda: pair_parity == swap_parity,
+            lambda: True
+        )
 
         # Get temperatures for this pair
         beta_cold = temperature_ladder[temp_idx]
@@ -446,16 +461,23 @@ def attempt_temperature_swaps(
             cold_idx = cold_sorted[pair_idx]
             hot_idx = hot_shuffled[pair_idx]
 
-            # Check if this is a valid pair (both indices < n_chains)
-            is_valid = (pair_idx < n_pairs) & is_active
+            # Check if this is a valid pair:
+            # 1. pair_idx < n_pairs: we have enough chains at both temperatures
+            # 2. is_active: DEO parity allows this temperature pair
+            # 3. Both indices are valid (not sentinels from padding)
+            #    After shuffling, sentinels (n_chains) can end up anywhere in hot_shuffled.
+            #    Without this check, swaps with sentinels cause one-way transfers
+            #    (chain moves to new temp, but no chain moves back - sentinel update is no-op).
+            is_valid = (pair_idx < n_pairs) & is_active & (cold_idx < n_chains) & (hot_idx < n_chains)
 
-            # Get log posteriors for swap acceptance
-            log_post_cold = all_log_posts[cold_idx]
-            log_post_hot = all_log_posts[hot_idx]
+            # Get log likelihoods for swap acceptance (use safe indexing)
+            safe_cold_idx = jnp.minimum(cold_idx, n_chains - 1)
+            safe_hot_idx = jnp.minimum(hot_idx, n_chains - 1)
+            log_lik_cold = all_log_liks[safe_cold_idx]
+            log_lik_hot = all_log_liks[safe_hot_idx]
 
-            # Acceptance ratio for swapping temperatures
-            # Note: Using full log_post instead of just log_likelihood (see comment above)
-            log_alpha = (beta_cold - beta_hot) * (log_post_hot - log_post_cold)
+            # Acceptance ratio for swapping temperatures (using log_likelihood only)
+            log_alpha = (beta_cold - beta_hot) * (log_lik_hot - log_lik_cold)
             log_alpha = jnp.nan_to_num(log_alpha, nan=-jnp.inf)
 
             return cold_idx, hot_idx, log_alpha, is_valid
@@ -703,6 +725,9 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
     # Swaps modify temperature assignments, not states - chains keep their traces
     n_temperatures = temperature_ladder.shape[0]
 
+    # Get DEO setting from run_params
+    use_deo = getattr(run_params, 'USE_DEO', True)
+
     def do_swaps(operand):
         """Perform temperature swaps (index process: swap assignments, not states)."""
         temp_a, temp_b, keys_a, s_accepts, s_attempts, parity = operand
@@ -717,7 +742,8 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
             temp_a, temp_b,
             temperature_ladder,
             log_post_fn,
-            s_accepts, s_attempts, parity
+            s_accepts, s_attempts, parity,
+            use_deo=use_deo
         )
         return new_temp_a, new_temp_b, keys_a, new_s_accepts, new_s_attempts, new_parity
 
