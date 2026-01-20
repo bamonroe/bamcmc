@@ -672,6 +672,7 @@ def rmcmc(
     calculate_rhat: bool = True,
     burn_in_fresh: bool = True,
     reset_noise_scale: float = 1.0,
+    use_nested_structure: bool = True,
 ) -> Dict[str, Any]:
     """
     Run MCMC sampling with automatic multi-run and checkpoint management.
@@ -697,6 +698,8 @@ def rmcmc(
         calculate_rhat: Whether to compute R-hat diagnostics each run
         burn_in_fresh: If True, only apply burn_iter to fresh runs (default True)
         reset_noise_scale: Scale factor for noise when resetting (default 1.0)
+        use_nested_structure: If True, use nested directory structure (default True):
+            {output_dir}/{model}/checkpoints/ and {output_dir}/{model}/history/full/
 
     Returns:
         Summary dict with:
@@ -723,9 +726,31 @@ def rmcmc(
         print(f"History files: {summary['history_files']}")
     """
     from pathlib import Path
+    from ..checkpoint_helpers import ensure_model_dirs, get_model_paths
 
     model_name = mcmc_config['posterior_id']
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Set up directory structure and path constructors
+    if use_nested_structure:
+        # Create nested directories: {output_dir}/{model}/checkpoints/, history/full/
+        paths = ensure_model_dirs(output_dir, model_name)
+        checkpoint_dir = paths['checkpoints']
+        history_dir = paths['history_full']
+
+        def checkpoint_path(num):
+            return str(checkpoint_dir / f"checkpoint_{num:03d}.npz")
+
+        def history_path(num):
+            return str(history_dir / f"history_{num:03d}.npz")
+    else:
+        # Legacy flat structure
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        def checkpoint_path(num):
+            return f"{output_dir}/{model_name}_checkpoint{num}.npz"
+
+        def history_path(num):
+            return f"{output_dir}/{model_name}_history_{num:03d}.npz"
 
     # Scan for existing checkpoints
     scan = scan_checkpoints(output_dir, model_name)
@@ -786,29 +811,29 @@ def rmcmc(
         output_checkpoint_num = sampling_run_num + 1  # checkpoint_1 is after 1st sampling run
 
         # Check if this run already completed (output checkpoint exists)
-        output_checkpoint_path = f"{output_dir}/{model_name}_checkpoint{output_checkpoint_num}.npz"
-        if Path(output_checkpoint_path).exists():
-            print(f"\n--- Run {i + 1}/{total_runs} (overall #{sampling_run_num + 1}) already complete (checkpoint_{output_checkpoint_num} exists), skipping ---")
+        output_checkpoint_file = checkpoint_path(output_checkpoint_num)
+        if Path(output_checkpoint_file).exists():
+            print(f"\n--- Run {i + 1}/{total_runs} (overall #{sampling_run_num + 1}) already complete (checkpoint_{output_checkpoint_num:03d} exists), skipping ---")
             run_log.append({
                 'run_index': sampling_run_num,
                 'mode': 'skipped',
-                'checkpoint': output_checkpoint_path,
+                'checkpoint': output_checkpoint_file,
             })
             continue
 
         # Determine input checkpoint (what to resume/reset from)
         input_checkpoint_num = output_checkpoint_num - 1  # checkpoint_0 for first run
-        input_checkpoint_path = f"{output_dir}/{model_name}_checkpoint{input_checkpoint_num}.npz"
-        has_input_checkpoint = Path(input_checkpoint_path).exists()
+        input_checkpoint_file = checkpoint_path(input_checkpoint_num)
+        has_input_checkpoint = Path(input_checkpoint_file).exists()
 
         # If input checkpoint doesn't exist, search for latest available
         if not has_input_checkpoint and input_checkpoint_num > 0:
             for idx in range(input_checkpoint_num - 1, -1, -1):
-                cp = f"{output_dir}/{model_name}_checkpoint{idx}.npz"
+                cp = checkpoint_path(idx)
                 if Path(cp).exists():
-                    input_checkpoint_path = cp
+                    input_checkpoint_file = cp
                     has_input_checkpoint = True
-                    print(f"  Note: Using checkpoint_{idx} (checkpoint_{input_checkpoint_num} not found)")
+                    print(f"  Note: Using checkpoint_{idx:03d} (checkpoint_{input_checkpoint_num:03d} not found)")
                     break
 
         # Determine mode and whether we need to save initial state
@@ -817,19 +842,22 @@ def rmcmc(
             actual_mode = 'fresh'
             resume_from = None
             reset_from = None
-            # Save initial state as checkpoint_0
-            save_initial_to = f"{output_dir}/{model_name}_checkpoint0.npz"
+            # Save initial state as checkpoint_000
+            save_initial_to = checkpoint_path(0)
         elif scheduled_mode == 'resume':
             actual_mode = 'resume'
-            resume_from = input_checkpoint_path
+            resume_from = input_checkpoint_file
             reset_from = None
         else:  # reset
             actual_mode = 'reset'
             resume_from = None
-            reset_from = input_checkpoint_path
+            reset_from = input_checkpoint_file
             # Save initial (reset) state before sampling
-            # For reset, we overwrite checkpoint_N with the reset state, then save N+1 after sampling
-            save_initial_to = f"{output_dir}/{model_name}_checkpoint{input_checkpoint_num}_reset.npz"
+            # For nested structure, just overwrite the checkpoint; for flat, add _reset suffix
+            if use_nested_structure:
+                save_initial_to = None  # Don't save reset state separately in nested mode
+            else:
+                save_initial_to = f"{output_dir}/{model_name}_checkpoint{input_checkpoint_num}_reset.npz"
 
         print(f"\n{'='*60}")
         print(f"Sampling run {i + 1}/{total_runs} (overall #{sampling_run_num + 1}, mode={actual_mode})")
@@ -861,24 +889,24 @@ def rmcmc(
             raise
 
         # Save output checkpoint
-        np.savez_compressed(output_checkpoint_path, **checkpoint)
+        np.savez_compressed(output_checkpoint_file, **checkpoint)
         final_iteration = checkpoint['iteration']
-        print(f"\nCheckpoint saved: {output_checkpoint_path} (iteration {final_iteration})")
+        print(f"\nCheckpoint saved: {output_checkpoint_file} (iteration {final_iteration})")
 
         # Save history if we collected samples
         history = results.get('history')
-        history_path = None
+        history_file = None
         if history is not None and len(history) > 0:
-            history_path = f"{output_dir}/{model_name}_history_{sampling_run_num:03d}.npz"
-            np.savez_compressed(history_path, **results, run_index=sampling_run_num)
-            print(f"History saved: {history_path}")
+            history_file = history_path(sampling_run_num)
+            np.savez_compressed(history_file, **results, run_index=sampling_run_num)
+            print(f"History saved: {history_file}")
 
         run_log.append({
             'run_index': sampling_run_num,
             'mode': actual_mode,
-            'checkpoint': output_checkpoint_path,
+            'checkpoint': output_checkpoint_file,
             'initial_checkpoint': save_initial_to,
-            'history': history_path,
+            'history': history_file,
             'iteration': final_iteration,
             'rhat_max': np.nanmax(results['diagnostics'].get('rhat', [np.nan])),
         })

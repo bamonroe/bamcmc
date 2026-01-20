@@ -371,9 +371,34 @@ def proposal_fn(operand) -> (proposal, log_hastings_ratio, new_key):
 - `compare_benchmark()`: Compare new vs cached performance
 
 ### checkpoint_helpers.py
+
+**Checkpoint Management:**
 - `save_checkpoint()` / `load_checkpoint()`: Persist chain states
 - `combine_batch_histories()`: Merge multiple batch files
 - `apply_burnin()`: Remove samples before iteration threshold
+
+**Post-Processing (Memory-Efficient Analysis):**
+- `get_model_paths()`: Get standardized paths for model output
+- `split_history_by_subject()`: Split full history into per-subject files
+- `postprocess_all_histories()`: Batch process all history files
+
+```python
+from bamcmc import postprocess_all_histories
+
+# Split 35GB of history files into per-subject files
+postprocess_all_histories(
+    output_dir='../data/output/dbar_fed0',
+    model_name='mix2_EH_bhm',
+    n_subjects=245,
+    n_hyper=18,           # Number of hyperparameters
+    params_per_subject=13,
+    hyper_first=False,    # Layout: [subjects][hyper] (standard BHM)
+)
+```
+
+**Parameter Layout:**
+- `hyper_first=False` (default): Subject params first, then hyperparameters
+- `hyper_first=True`: Hyperparameters first, then subject params
 
 ### reset_utils.py
 - `generate_reset_vector()`: Create new starting points from checkpoint

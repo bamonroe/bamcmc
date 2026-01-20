@@ -10,6 +10,7 @@
 - [Log-Posterior Functions](./log_posterior.md) - Requirements for posterior functions
 - [Registering Models](./registration.md) - How to register posteriors with the system
 - [Settings Reference](./settings.md) - Available proposal settings
+- [Checkpoint Helpers](./checkpoint_helpers.md) - Post-processing and memory-efficient analysis
 
 ## Package Overview
 

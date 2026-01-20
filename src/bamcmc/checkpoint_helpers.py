@@ -469,9 +469,18 @@ def scan_checkpoints(output_dir: str, model_name: str):
     """
     Scan output directory for existing checkpoints and history files.
 
+    Supports two directory structures:
+    1. New nested structure (preferred):
+       {output_dir}/{model_name}/checkpoints/checkpoint_NNN.npz
+       {output_dir}/{model_name}/history/full/history_NNN.npz
+
+    2. Legacy flat structure (for backwards compatibility):
+       {output_dir}/{model_name}_checkpoint{N}.npz
+       {output_dir}/{model_name}_history_{NNN}.npz
+
     Args:
-        output_dir: Directory containing checkpoint files
-        model_name: Model name prefix for checkpoint files
+        output_dir: Base output directory
+        model_name: Model name
 
     Returns:
         Dict with:
@@ -479,6 +488,7 @@ def scan_checkpoints(output_dir: str, model_name: str):
             - history_files: List of (run_index, path) tuples, sorted by index
             - latest_run_index: Highest run index found (-1 if none)
             - latest_checkpoint: Path to most recent checkpoint (None if none)
+            - structure: 'nested' or 'flat' indicating which structure was found
     """
     import re
 
@@ -486,10 +496,42 @@ def scan_checkpoints(output_dir: str, model_name: str):
 
     checkpoint_files = []
     history_files = []
+    structure = 'flat'  # Default to flat structure
 
-    if output_path.exists():
+    # Check for new nested structure first
+    nested_base = output_path / model_name
+    nested_checkpoints = nested_base / 'checkpoints'
+    nested_history = nested_base / 'history' / 'full'
+
+    if nested_checkpoints.exists() or nested_history.exists():
+        structure = 'nested'
+
+        # Scan nested checkpoint directory
+        if nested_checkpoints.exists():
+            # Pattern: checkpoint_NNN.npz
+            checkpoint_pattern = re.compile(r'^checkpoint_(\d+)\.npz$')
+            for f in nested_checkpoints.iterdir():
+                if f.is_file():
+                    cp_match = checkpoint_pattern.match(f.name)
+                    if cp_match:
+                        run_idx = int(cp_match.group(1))
+                        checkpoint_files.append((run_idx, str(f)))
+
+        # Scan nested history/full directory
+        if nested_history.exists():
+            # Pattern: history_NNN.npz
+            history_pattern = re.compile(r'^history_(\d+)\.npz$')
+            for f in nested_history.iterdir():
+                if f.is_file():
+                    hist_match = history_pattern.match(f.name)
+                    if hist_match:
+                        run_idx = int(hist_match.group(1))
+                        history_files.append((run_idx, str(f)))
+
+    # Fall back to legacy flat structure
+    if not checkpoint_files and not history_files and output_path.exists():
+        structure = 'flat'
         # Pattern: {model}_checkpoint{N}.npz or {model}_checkpoint{N}_suffix.npz
-        # Matches: model_checkpoint0.npz, model_checkpoint1.npz, model_checkpoint0_reset.npz
         checkpoint_pattern = re.compile(rf'^{re.escape(model_name)}_checkpoint(\d+)(_[a-z]+)?\.npz$')
         # Pattern: {model}_history_{NNN}.npz
         history_pattern = re.compile(rf'^{re.escape(model_name)}_history_(\d+)\.npz$')
@@ -518,7 +560,50 @@ def scan_checkpoints(output_dir: str, model_name: str):
         'history_files': history_files,
         'latest_run_index': latest_run_index,
         'latest_checkpoint': latest_checkpoint,
+        'structure': structure,
     }
+
+
+def get_model_paths(output_dir: str, model_name: str):
+    """
+    Get directory paths for the nested structure.
+
+    Args:
+        output_dir: Base output directory (e.g., '../data/output/dbar_fed0')
+        model_name: Model name (e.g., 'mix2_EH_bhm')
+
+    Returns:
+        Dict with paths:
+            - base: {output_dir}/{model_name}/
+            - checkpoints: {base}/checkpoints/
+            - history_full: {base}/history/full/
+            - history_per_subject: {base}/history/per_subject/
+    """
+    base = Path(output_dir) / model_name
+    return {
+        'base': base,
+        'checkpoints': base / 'checkpoints',
+        'history_full': base / 'history' / 'full',
+        'history_per_subject': base / 'history' / 'per_subject',
+    }
+
+
+def ensure_model_dirs(output_dir: str, model_name: str):
+    """
+    Create the nested directory structure for a model.
+
+    Args:
+        output_dir: Base output directory
+        model_name: Model name
+
+    Returns:
+        Dict with paths (same as get_model_paths)
+    """
+    paths = get_model_paths(output_dir, model_name)
+    paths['checkpoints'].mkdir(parents=True, exist_ok=True)
+    paths['history_full'].mkdir(parents=True, exist_ok=True)
+    paths['history_per_subject'].mkdir(parents=True, exist_ok=True)
+    return paths
 
 
 def get_latest_checkpoint(output_dir: str, model_name: str):
@@ -540,6 +625,8 @@ def clean_model_files(output_dir: str, model_name: str, mode: str = 'all'):
     """
     Delete checkpoint and history files for a model.
 
+    Handles both nested and flat directory structures.
+
     Args:
         output_dir: Directory containing the files
         model_name: Model name prefix
@@ -550,6 +637,8 @@ def clean_model_files(output_dir: str, model_name: str, mode: str = 'all'):
     Returns:
         dict with 'deleted_checkpoints', 'deleted_histories', 'kept_checkpoint'
     """
+    import shutil
+
     scan = scan_checkpoints(output_dir, model_name)
 
     deleted_checkpoints = []
@@ -569,7 +658,7 @@ def clean_model_files(output_dir: str, model_name: str, mode: str = 'all'):
             except OSError as e:
                 print(f"  Warning: Could not delete {cp_path}: {e}")
 
-    # Delete all histories
+    # Delete all histories (from full/)
     for run_idx, hist_path in scan['history_files']:
         try:
             Path(hist_path).unlink()
@@ -577,8 +666,227 @@ def clean_model_files(output_dir: str, model_name: str, mode: str = 'all'):
         except OSError as e:
             print(f"  Warning: Could not delete {hist_path}: {e}")
 
+    # For nested structure, also clean per_subject directory
+    if scan.get('structure') == 'nested':
+        paths = get_model_paths(output_dir, model_name)
+        per_subject_dir = paths['history_per_subject']
+        if per_subject_dir.exists():
+            try:
+                shutil.rmtree(per_subject_dir)
+                per_subject_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                print(f"  Warning: Could not clean per_subject directory: {e}")
+
     return {
         'deleted_checkpoints': deleted_checkpoints,
         'deleted_histories': deleted_histories,
         'kept_checkpoint': kept_checkpoint,
+    }
+
+
+def split_history_by_subject(
+    history_path: str,
+    output_base: str,
+    n_subjects: int,
+    n_hyper: int = 32,
+    params_per_subject: int = 13,
+    hyper_first: bool = False,
+    verbose: bool = True,
+):
+    """
+    Split a full history file into per-subject files.
+
+    This is a post-processing step to enable memory-efficient analysis.
+    Instead of loading all 44GB at once, we can load ~170MB per subject.
+
+    Args:
+        history_path: Path to full history file (e.g., history/full/history_000.npz)
+        output_base: Base directory for per-subject output (e.g., history/per_subject)
+        n_subjects: Number of subjects in the model
+        n_hyper: Number of hyperparameters (saved in a shared file)
+        params_per_subject: Number of parameters per subject
+        hyper_first: If True, layout is [hyper][subjects]. If False (default),
+                     layout is [subjects][hyper] (standard BHM layout).
+        verbose: Print progress
+
+    Returns:
+        dict with:
+            - hyper_path: Path to hyperparameter file
+            - subject_paths: List of (subject_idx, path) tuples
+            - n_chains: Number of chains in history
+            - n_samples: Number of samples per chain
+
+    Output structure:
+        {output_base}/
+            hyperparameters/history_NNN.npz  - hyperparameters only
+            subject_000/history_NNN.npz      - subject 0 params
+            subject_001/history_NNN.npz      - subject 1 params
+            ...
+    """
+    import numpy as np
+    from pathlib import Path
+
+    history_path = Path(history_path)
+    output_base = Path(output_base)
+
+    # Extract run index from filename (e.g., history_010.npz -> 010)
+    run_idx = history_path.stem.split('_')[-1]
+
+    if verbose:
+        print(f"Splitting {history_path.name}...")
+
+    # Load the full history
+    data = np.load(history_path, allow_pickle=True)
+    history = data['history']  # Shape: (n_samples, n_chains, n_params)
+
+    n_samples, n_chains, n_params = history.shape
+
+    # Calculate expected params (excluding generated quantities)
+    subject_total = n_subjects * params_per_subject
+    expected_params = n_hyper + subject_total
+    if n_params < expected_params:
+        raise ValueError(
+            f"History has {n_params} params, expected at least {expected_params} "
+            f"({n_hyper} hyper + {n_subjects} × {params_per_subject})"
+        )
+
+    # Get metadata from source file - copy all important fields
+    iterations = data['iterations'] if 'iterations' in data else None
+    likelihoods = data['likelihoods'] if 'likelihoods' in data else None
+
+    # Preserve all top-level metadata fields (K, M, temperature_history, etc.)
+    metadata_fields = {}
+    for key in ['K', 'M', 'thin_iteration', 'run_index', 'mcmc_config', 'diagnostics',
+                'temperature_history', 'n_temperatures']:
+        if key in data:
+            metadata_fields[key] = data[key]
+
+    subject_paths = []
+
+    # Calculate index ranges based on layout
+    if hyper_first:
+        # Layout: [hyper(n_hyper)][subjects(n_subjects × params_per_subject)][gq...]
+        hyper_start = 0
+        hyper_end = n_hyper
+        subject_base = n_hyper
+    else:
+        # Layout: [subjects(n_subjects × params_per_subject)][hyper(n_hyper)][gq...]
+        # This is the standard BHM layout
+        subject_base = 0
+        hyper_start = subject_total
+        hyper_end = subject_total + n_hyper
+
+    # Save hyperparameters (with all metadata - only needed in hyper file)
+    hyper_dir = output_base / 'hyperparameters'
+    hyper_dir.mkdir(parents=True, exist_ok=True)
+    hyper_path = hyper_dir / f'history_{run_idx}.npz'
+
+    hyper_history = history[:, :, hyper_start:hyper_end]
+    save_dict = {'history': hyper_history}
+    if iterations is not None:
+        save_dict['iterations'] = iterations
+    if likelihoods is not None:
+        save_dict['likelihoods'] = likelihoods
+    # Add all metadata fields
+    save_dict.update(metadata_fields)
+
+    np.savez_compressed(hyper_path, **save_dict)
+
+    if verbose:
+        print(f"  Saved hyperparameters: {hyper_path.name} ({hyper_history.nbytes / 1e6:.1f} MB)")
+
+    # Save each subject's parameters
+    for subj_idx in range(n_subjects):
+        subj_dir = output_base / f'subject_{subj_idx:03d}'
+        subj_dir.mkdir(parents=True, exist_ok=True)
+        subj_path = subj_dir / f'history_{run_idx}.npz'
+
+        # Calculate subject's parameter indices
+        start_idx = subject_base + subj_idx * params_per_subject
+        end_idx = start_idx + params_per_subject
+
+        subj_history = history[:, :, start_idx:end_idx]
+
+        save_dict = {'history': subj_history, 'subject_idx': subj_idx}
+        if iterations is not None:
+            save_dict['iterations'] = iterations
+        # Don't duplicate likelihoods or full metadata for each subject (waste of space)
+
+        np.savez_compressed(subj_path, **save_dict)
+        subject_paths.append((subj_idx, str(subj_path)))
+
+    if verbose:
+        per_subj_mb = n_samples * n_chains * params_per_subject * 8 / 1e6
+        print(f"  Saved {n_subjects} subject files (~{per_subj_mb:.1f} MB each)")
+
+    return {
+        'hyper_path': str(hyper_path),
+        'subject_paths': subject_paths,
+        'n_chains': n_chains,
+        'n_samples': n_samples,
+    }
+
+
+def postprocess_all_histories(
+    output_dir: str,
+    model_name: str,
+    n_subjects: int,
+    n_hyper: int = 32,
+    params_per_subject: int = 13,
+    hyper_first: bool = False,
+    verbose: bool = True,
+):
+    """
+    Post-process all history files for a model, splitting into per-subject files.
+
+    Args:
+        output_dir: Base output directory (e.g., ../data/output/dbar_fed0)
+        model_name: Model name
+        n_subjects: Number of subjects
+        n_hyper: Number of hyperparameters
+        params_per_subject: Parameters per subject
+        hyper_first: If True, layout is [hyper][subjects]. If False (default),
+                     layout is [subjects][hyper] (standard BHM layout).
+
+    Returns:
+        dict with summary of processed files
+    """
+    from pathlib import Path
+
+    paths = get_model_paths(output_dir, model_name)
+    full_history_dir = paths['history_full']
+    per_subject_dir = paths['history_per_subject']
+
+    if not full_history_dir.exists():
+        print(f"No history directory found: {full_history_dir}")
+        return {'processed': 0}
+
+    # Find all history files
+    history_files = sorted(full_history_dir.glob('history_*.npz'))
+
+    if not history_files:
+        print(f"No history files found in {full_history_dir}")
+        return {'processed': 0}
+
+    if verbose:
+        print(f"Post-processing {len(history_files)} history files...")
+        total_size = sum(f.stat().st_size for f in history_files)
+        print(f"  Total size: {total_size / 1e9:.1f} GB")
+
+    results = []
+    for hist_path in history_files:
+        result = split_history_by_subject(
+            str(hist_path),
+            str(per_subject_dir),
+            n_subjects=n_subjects,
+            n_hyper=n_hyper,
+            params_per_subject=params_per_subject,
+            hyper_first=hyper_first,
+            verbose=verbose,
+        )
+        results.append(result)
+
+    return {
+        'processed': len(results),
+        'results': results,
     }
