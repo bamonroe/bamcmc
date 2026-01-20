@@ -178,13 +178,11 @@ def configure_mcmc_system(
     beta_min = mcmc_config.get('beta_min', 0.1)
     swap_every = mcmc_config.get('swap_every', 1)
     per_temp_proposals = mcmc_config.get('per_temp_proposals', False)
-    blend_pseudocount = mcmc_config.get('blend_pseudocount', 10.0)
     use_deo = mcmc_config.get('use_deo', True)  # Use DEO scheme (default True)
     user_config['n_temperatures'] = n_temperatures
     user_config['beta_min'] = beta_min
     user_config['swap_every'] = swap_every
     user_config['per_temp_proposals'] = per_temp_proposals
-    user_config['blend_pseudocount'] = blend_pseudocount
     user_config['use_deo'] = use_deo
 
     # Configure JAX precision
@@ -286,7 +284,6 @@ def configure_mcmc_system(
         N_CHAINS_TO_SAVE=n_chains_to_save,
         PER_TEMP_PROPOSALS=per_temp_proposals,
         N_TEMPERATURES=n_temperatures,
-        BLEND_PSEUDOCOUNT=blend_pseudocount,
         USE_DEO=use_deo,
     )
 

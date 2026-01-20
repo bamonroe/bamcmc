@@ -192,125 +192,6 @@ def compute_block_statistics_per_temp(
     return all_means, all_covs, coupled_blocks, all_modes
 
 
-def compute_block_statistics_blended(
-    coupled_states: jnp.ndarray,
-    temp_assignments: jnp.ndarray,
-    n_temperatures: int,
-    block_indices: jnp.ndarray,
-    block_masks: jnp.ndarray,
-    log_post_fn=None,
-    blend_pseudocount: float = 10.0
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """
-    Compute blended per-temperature + global block statistics.
-
-    Blends per-temperature statistics with global statistics based on the number
-    of chains at each temperature. This handles edge cases where a temperature
-    has 0 or few chains gracefully.
-
-    Blending formula:
-        weight = n_at_temp / (n_at_temp + k)
-        blended = weight * per_temp + (1 - weight) * global
-
-    With k=10:
-        0 chains  -> 0% per-temp (100% global)
-        10 chains -> 50% per-temp
-        50 chains -> 83% per-temp
-        140 chains -> 93% per-temp
-
-    Args:
-        coupled_states: States from opposite group (n_chains, n_params)
-        temp_assignments: Temperature index for each chain (n_chains,)
-        n_temperatures: Number of temperature levels
-        block_indices: Block index array (n_blocks, max_block_size)
-        block_masks: Parameter masks (n_blocks, max_block_size)
-        log_post_fn: Optional log posterior function for computing mode
-        blend_pseudocount: Pseudocount k for blending (default 10.0)
-
-    Returns:
-        block_means: (n_temperatures, n_blocks, max_block_size)
-        block_covs: (n_temperatures, n_blocks, max_block_size, max_block_size)
-        coupled_blocks: (n_blocks, n_chains, max_block_size) - still full for multinomial
-        block_modes: (n_temperatures, n_blocks, max_block_size)
-    """
-    n_chains, n_params = coupled_states.shape
-    n_blocks = block_indices.shape[0]
-    max_block_size = block_indices.shape[1]
-
-    # 1. Compute GLOBAL statistics (all chains, no temperature filtering)
-    global_means, global_covs, coupled_blocks, global_modes = compute_block_statistics(
-        coupled_states, block_indices, block_masks, log_post_fn
-    )
-
-    # 2. For each temperature, compute per-temp stats and blend with global
-    def compute_blended_for_temp(temp_idx):
-        """Compute blended statistics for chains at a specific temperature."""
-        # Mask for chains at this temperature
-        temp_mask = (temp_assignments == temp_idx)  # (n_chains,)
-        weights = temp_mask.astype(coupled_states.dtype)
-        n_at_temp = jnp.sum(temp_mask)
-
-        # Blending weight: 0 when no chains, approaches 1 with many chains
-        blend_weight = n_at_temp / (n_at_temp + blend_pseudocount)
-
-        def get_blended_stats_for_block(b_indices, b_mask, g_mean, g_cov):
-            """Compute blended stats for one block."""
-            safe_indices = jnp.clip(b_indices, 0, n_params - 1)
-            block_data = jnp.take(coupled_states, safe_indices, axis=1)  # (n_chains, block_size)
-
-            # Per-temp weighted mean
-            weighted_sum = jnp.sum(block_data * weights[:, None], axis=0)
-            per_temp_mean = jnp.where(n_at_temp > 0, weighted_sum / n_at_temp, g_mean) * b_mask
-
-            # Per-temp weighted covariance
-            centered = block_data - per_temp_mean[None, :]
-            weighted_centered = centered * jnp.sqrt(weights[:, None])
-            per_temp_cov = jnp.dot(weighted_centered.T, weighted_centered)
-            per_temp_cov = jnp.where(n_at_temp > 1, per_temp_cov / (n_at_temp - 1), g_cov)
-            per_temp_cov = per_temp_cov + NUGGET * jnp.eye(max_block_size)
-
-            # Apply mask to covariance
-            mask_2d = jnp.outer(b_mask, b_mask)
-            per_temp_cov = jnp.where(mask_2d, per_temp_cov, jnp.eye(max_block_size))
-
-            # Blend per-temp with global
-            blended_mean = blend_weight * per_temp_mean + (1 - blend_weight) * g_mean
-            blended_cov = blend_weight * per_temp_cov + (1 - blend_weight) * g_cov
-
-            return blended_mean, blended_cov
-
-        blended_means, blended_covs = jax.vmap(get_blended_stats_for_block)(
-            block_indices, block_masks, global_means, global_covs
-        )
-
-        # Mode: use per-temp mode if available, else global mode
-        if log_post_fn is not None:
-            all_indices = jnp.arange(n_params)
-            log_posts = jax.vmap(lambda s: log_post_fn(s, all_indices, 1.0))(coupled_states)
-            # Mask out chains not at this temperature
-            masked_log_posts = jnp.where(temp_mask, log_posts, -jnp.inf)
-            mode_idx = jnp.argmax(masked_log_posts)
-            mode_state = coupled_states[mode_idx]
-
-            def get_mode_for_block(b_indices, b_mask, g_mode):
-                safe_indices = jnp.clip(b_indices, 0, mode_state.shape[0] - 1)
-                per_temp_mode = jnp.take(mode_state, safe_indices) * b_mask
-                # Use per-temp mode if we have chains, else global
-                return jnp.where(n_at_temp > 0, per_temp_mode, g_mode)
-
-            blended_modes = jax.vmap(get_mode_for_block)(block_indices, block_masks, global_modes)
-        else:
-            blended_modes = blended_means
-
-        return blended_means, blended_covs, blended_modes
-
-    # Compute blended stats for all temperatures
-    temp_indices = jnp.arange(n_temperatures)
-    all_means, all_covs, all_modes = jax.vmap(compute_blended_for_temp)(temp_indices)
-
-    return all_means, all_covs, coupled_blocks, all_modes
-
-
 def _save_with_gq(states_A, states_B, temp_assigns_A, temp_assigns_B, gq_fn, num_gq):
     """Combine states, compute GQ for all chains, return with temperature indices.
 
@@ -577,7 +458,6 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
     # Get per-temperature proposal setting from run_params
     per_temp_proposals = getattr(run_params, 'PER_TEMP_PROPOSALS', False)
     n_temperatures = getattr(run_params, 'N_TEMPERATURES', 1)
-    blend_pseudocount = getattr(run_params, 'BLEND_PSEUDOCOUNT', 10.0)
 
     # Compute beta values for each chain based on temperature assignments
     # betas_A[i] = temperature_ladder[temp_assignments_A[i]]
@@ -585,14 +465,13 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
     betas_B = temperature_ladder[temp_assignments_B]
 
     if per_temp_proposals and n_temperatures > 1:
-        # Per-temperature proposals with blending: compute blended per-temp + global statistics
-        # This handles empty/sparse temperatures gracefully via pseudocount blending
+        # Per-temperature proposals: each temperature level gets its own statistics
+        # With index process, chain counts per temperature are fixed, so no blending needed
 
-        # Statistics from B for updating A (blended per-temp + global)
-        means_per_temp_A, covs_per_temp_A, coupled_blocks_A, modes_per_temp_A = compute_block_statistics_blended(
+        # Statistics from B for updating A (per-temperature)
+        means_per_temp_A, covs_per_temp_A, coupled_blocks_A, modes_per_temp_A = compute_block_statistics_per_temp(
             states_B, temp_assignments_B, n_temperatures,
-            block_arrays.indices, block_arrays.masks, log_post_fn,
-            blend_pseudocount
+            block_arrays.indices, block_arrays.masks, log_post_fn
         )
         # Gather per-chain: means_A[chain_i] = means_per_temp_A[temp_assignments_A[chain_i]]
         means_A = means_per_temp_A[temp_assignments_A]  # (n_chains_A, n_blocks, max_block_size)
@@ -607,11 +486,10 @@ def mcmc_scan_body_offload(carry, step_idx, log_post_fn, grad_log_post_fn, direc
             betas_A
         )
 
-        # Statistics from updated A for updating B (blended per-temp + global)
-        means_per_temp_B, covs_per_temp_B, coupled_blocks_B, modes_per_temp_B = compute_block_statistics_blended(
+        # Statistics from updated A for updating B (per-temperature)
+        means_per_temp_B, covs_per_temp_B, coupled_blocks_B, modes_per_temp_B = compute_block_statistics_per_temp(
             next_states_A, temp_assignments_A, n_temperatures,
-            block_arrays.indices, block_arrays.masks, log_post_fn,
-            blend_pseudocount
+            block_arrays.indices, block_arrays.masks, log_post_fn
         )
         means_B = means_per_temp_B[temp_assignments_B]
         covs_B = covs_per_temp_B[temp_assignments_B]
