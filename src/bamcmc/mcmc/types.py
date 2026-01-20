@@ -130,7 +130,7 @@ class RunParams:
     START_ITERATION: int
     SAVE_LIKELIHOODS: bool
     N_CHAINS_TO_SAVE: int  # Number of chains to save (beta=1 chains when tempering)
-    PER_TEMP_PROPOSALS: bool = False  # Per-temperature proposal statistics
+    PER_TEMP_PROPOSALS: bool = True  # Per-temperature proposal statistics
     N_TEMPERATURES: int = 1  # Number of temperature levels
     USE_DEO: bool = True  # Use DEO scheme for parallel tempering swaps
 

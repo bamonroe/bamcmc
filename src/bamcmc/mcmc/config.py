@@ -177,7 +177,7 @@ def configure_mcmc_system(
     n_temperatures = mcmc_config.get('n_temperatures', 1)
     beta_min = mcmc_config.get('beta_min', 0.1)
     swap_every = mcmc_config.get('swap_every', 1)
-    per_temp_proposals = mcmc_config.get('per_temp_proposals', False)
+    per_temp_proposals = mcmc_config.get('per_temp_proposals', True)
     use_deo = mcmc_config.get('use_deo', True)  # Use DEO scheme (default True)
     user_config['n_temperatures'] = n_temperatures
     user_config['beta_min'] = beta_min
