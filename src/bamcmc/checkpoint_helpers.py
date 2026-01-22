@@ -73,7 +73,7 @@ def save_checkpoint(filepath, carry, user_config, metadata=None):
 
     filepath = Path(filepath)
     np.savez_compressed(filepath, **checkpoint)
-    print(f"Checkpoint saved to {filepath}")
+    print(f"Checkpoint saved to {filepath}", flush=True)
 
 
 def load_checkpoint(filepath):
@@ -199,8 +199,8 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
 
     K = checkpoint['num_superchains']
     M = checkpoint['subchains_per_super']
-    print(f"Resuming from checkpoint at iteration {checkpoint['iteration']} (resetting run counter to 0)")
-    print(f"Structure: {K} Superchains × {M} Subchains")
+    print(f"Resuming from checkpoint at iteration {checkpoint['iteration']} (resetting run counter to 0)", flush=True)
+    print(f"Structure: {K} Superchains × {M} Subchains", flush=True)
 
     # Handle tempering state
     # Use int64 for temp assignments when x64 mode is enabled (dtype is float64)
@@ -223,7 +223,7 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
         swap_attempts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
         # Restore DEO parity if available, else default to 0 (even round)
         swap_parity = jnp.array(checkpoint.get('swap_parity', 0), dtype=jnp.int32)
-        print(f"Parallel Tempering: {checkpoint['n_temperatures']} temperatures (DEO parity: {int(swap_parity)})")
+        print(f"Parallel Tempering: {checkpoint['n_temperatures']} temperatures (DEO parity: {int(swap_parity)})", flush=True)
     else:
         # Create fresh tempering state (single temperature = no tempering)
         if n_temperatures > 1:
@@ -235,7 +235,7 @@ def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num
             chains_per_temp = num_chains // n_temperatures
             temp_assignments = jnp.repeat(jnp.arange(n_temperatures, dtype=int_dtype), chains_per_temp)
             temp_assignments_A, temp_assignments_B = jnp.split(temp_assignments, [num_chains_a], axis=0)
-            print(f"Parallel Tempering: {n_temperatures} temperatures (fresh init)")
+            print(f"Parallel Tempering: {n_temperatures} temperatures (fresh init)", flush=True)
         else:
             temperature_ladder = jnp.array([1.0], dtype=dtype)
             temp_assignments_A = jnp.zeros(num_chains_a, dtype=int_dtype)
@@ -337,12 +337,12 @@ def combine_batch_histories(batch_paths):
     metadata['batch_sizes'] = batch_sizes
     metadata['n_batches'] = len(batch_paths)
 
-    print(f"Combined {len(batch_paths)} batches:")
-    print(f"  Total samples: {combined_history.shape[0]}")
-    print(f"  Iteration range: {combined_iterations[0]} - {combined_iterations[-1]}")
-    print(f"  Batch boundaries: {batch_boundaries}")
+    print(f"Combined {len(batch_paths)} batches:", flush=True)
+    print(f"  Total samples: {combined_history.shape[0]}", flush=True)
+    print(f"  Iteration range: {combined_iterations[0]} - {combined_iterations[-1]}", flush=True)
+    print(f"  Batch boundaries: {batch_boundaries}", flush=True)
     if combined_temp_history is not None:
-        print(f"  Temperature history: {combined_temp_history.shape}")
+        print(f"  Temperature history: {combined_temp_history.shape}", flush=True)
 
     return combined_history, combined_iterations, combined_likelihoods, metadata
 
@@ -364,9 +364,9 @@ def apply_burnin(history, iterations, likelihoods=None, min_iteration=0):
     n_dropped = np.sum(~mask)
     n_kept = np.sum(mask)
 
-    print(f"Burn-in filter (min_iteration={min_iteration}):")
-    print(f"  Dropped: {n_dropped} samples (iterations {iterations[0]} - {min_iteration - 1})")
-    print(f"  Kept: {n_kept} samples (iterations {min_iteration} - {iterations[-1]})")
+    print(f"Burn-in filter (min_iteration={min_iteration}):", flush=True)
+    print(f"  Dropped: {n_dropped} samples (iterations {iterations[0]} - {min_iteration - 1})", flush=True)
+    print(f"  Kept: {n_kept} samples (iterations {min_iteration} - {iterations[-1]})", flush=True)
 
     filtered_history = history[mask]
     filtered_iterations = iterations[mask]
@@ -398,7 +398,7 @@ def compute_rhat_from_history(history, K, M, n_temperatures=1):
     # Adjust K for parallel tempering (only beta=1 chains are in history)
     if n_temperatures > 1:
         K_effective = K // n_temperatures
-        print(f"  (Tempering active: using K={K_effective} of {K} superchains for beta=1 chains)")
+        print(f"  (Tempering active: using K={K_effective} of {K} superchains for beta=1 chains)", flush=True)
         K = K_effective
 
     if n_chains != K * M:
@@ -443,23 +443,23 @@ def compute_rhat_from_history(history, K, M, n_temperatures=1):
     # No special handling - stuck continuous params will show as NaN/inf
     rhat = np.sqrt(V_hat / W)
 
-    print(f"Nested R-hat ({K}×{M}):")
-    print(f"  Max: {np.nanmax(rhat):.4f}")
-    print(f"  Median: {np.nanmedian(rhat):.4f}")
-    print(f"  Min: {np.nanmin(rhat):.4f}")
+    print(f"Nested R-hat ({K}×{M}):", flush=True)
+    print(f"  Max: {np.nanmax(rhat):.4f}", flush=True)
+    print(f"  Median: {np.nanmedian(rhat):.4f}", flush=True)
+    print(f"  Min: {np.nanmin(rhat):.4f}", flush=True)
 
     # Check for NaN/Inf
     n_nan = np.sum(~np.isfinite(rhat))
     if n_nan > 0:
-        print(f"  WARNING: {n_nan} params have NaN/Inf R-hat (zero variance - stuck or discrete)")
+        print(f"  WARNING: {n_nan} params have NaN/Inf R-hat (zero variance - stuck or discrete)", flush=True)
 
     # Threshold from Margossian et al. (2022)
     tau = 1e-4
     threshold = np.sqrt(1 + 1/M + tau)
     if np.nanmax(rhat) < threshold:
-        print(f"  Converged (max < {threshold:.4f})")
+        print(f"  Converged (max < {threshold:.4f})", flush=True)
     else:
-        print(f"  Not converged (max = {np.nanmax(rhat):.4f} >= {threshold:.4f})")
+        print(f"  Not converged (max = {np.nanmax(rhat):.4f} >= {threshold:.4f})", flush=True)
 
     return rhat
 
@@ -656,7 +656,7 @@ def clean_model_files(output_dir: str, model_name: str, mode: str = 'all'):
                 Path(cp_path).unlink()
                 deleted_checkpoints.append(cp_path)
             except OSError as e:
-                print(f"  Warning: Could not delete {cp_path}: {e}")
+                print(f"  Warning: Could not delete {cp_path}: {e}", flush=True)
 
     # Delete all histories (from full/)
     for run_idx, hist_path in scan['history_files']:
@@ -664,7 +664,7 @@ def clean_model_files(output_dir: str, model_name: str, mode: str = 'all'):
             Path(hist_path).unlink()
             deleted_histories.append(hist_path)
         except OSError as e:
-            print(f"  Warning: Could not delete {hist_path}: {e}")
+            print(f"  Warning: Could not delete {hist_path}: {e}", flush=True)
 
     # For nested structure, also clean per_subject directory
     if scan.get('structure') == 'nested':
@@ -675,7 +675,7 @@ def clean_model_files(output_dir: str, model_name: str, mode: str = 'all'):
                 shutil.rmtree(per_subject_dir)
                 per_subject_dir.mkdir(parents=True, exist_ok=True)
             except OSError as e:
-                print(f"  Warning: Could not clean per_subject directory: {e}")
+                print(f"  Warning: Could not clean per_subject directory: {e}", flush=True)
 
     return {
         'deleted_checkpoints': deleted_checkpoints,
@@ -733,7 +733,7 @@ def split_history_by_subject(
     run_idx = history_path.stem.split('_')[-1]
 
     if verbose:
-        print(f"Splitting {history_path.name}...")
+        print(f"Splitting {history_path.name}...", flush=True)
 
     # Load the full history
     data = np.load(history_path, allow_pickle=True)
@@ -793,7 +793,7 @@ def split_history_by_subject(
     np.savez_compressed(hyper_path, **save_dict)
 
     if verbose:
-        print(f"  Saved hyperparameters: {hyper_path.name} ({hyper_history.nbytes / 1e6:.1f} MB)")
+        print(f"  Saved hyperparameters: {hyper_path.name} ({hyper_history.nbytes / 1e6:.1f} MB)", flush=True)
 
     # Save each subject's parameters
     for subj_idx in range(n_subjects):
@@ -817,7 +817,7 @@ def split_history_by_subject(
 
     if verbose:
         per_subj_mb = n_samples * n_chains * params_per_subject * 8 / 1e6
-        print(f"  Saved {n_subjects} subject files (~{per_subj_mb:.1f} MB each)")
+        print(f"  Saved {n_subjects} subject files (~{per_subj_mb:.1f} MB each)", flush=True)
 
     return {
         'hyper_path': str(hyper_path),
@@ -858,20 +858,20 @@ def postprocess_all_histories(
     per_subject_dir = paths['history_per_subject']
 
     if not full_history_dir.exists():
-        print(f"No history directory found: {full_history_dir}")
+        print(f"No history directory found: {full_history_dir}", flush=True)
         return {'processed': 0}
 
     # Find all history files
     history_files = sorted(full_history_dir.glob('history_*.npz'))
 
     if not history_files:
-        print(f"No history files found in {full_history_dir}")
+        print(f"No history files found in {full_history_dir}", flush=True)
         return {'processed': 0}
 
     if verbose:
-        print(f"Post-processing {len(history_files)} history files...")
+        print(f"Post-processing {len(history_files)} history files...", flush=True)
         total_size = sum(f.stat().st_size for f in history_files)
-        print(f"  Total size: {total_size / 1e9:.1f} GB")
+        print(f"  Total size: {total_size / 1e9:.1f} GB", flush=True)
 
     results = []
     for hist_path in history_files:
