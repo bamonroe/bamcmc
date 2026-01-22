@@ -77,6 +77,8 @@ from .checkpoint_helpers import (
     clean_model_files,
     split_history_by_subject,
     postprocess_all_histories,
+    save_prior_config,
+    load_prior_config,
 )
 from .reset_utils import (
     generate_reset_states,
