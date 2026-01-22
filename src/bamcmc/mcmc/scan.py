@@ -126,6 +126,14 @@ def compute_block_statistics_per_temp(
     n_blocks = block_indices.shape[0]
     max_block_size = block_indices.shape[1]
 
+    # Pre-compute log posteriors ONCE for all chains (outside the temperature vmap)
+    # This avoids redundant computation - log_posts are the same regardless of temperature
+    if log_post_fn is not None:
+        all_indices = jnp.arange(n_params)
+        log_posts = jax.vmap(lambda s: log_post_fn(s, all_indices, 1.0))(coupled_states)
+    else:
+        log_posts = None
+
     def compute_stats_for_temp(temp_idx):
         """Compute statistics for chains at a specific temperature."""
         # Mask for chains at this temperature
@@ -160,10 +168,8 @@ def compute_block_statistics_per_temp(
         means, covs = jax.vmap(get_stats_for_block)(block_indices, block_masks)
 
         # Compute mode for this temperature (highest full log-post chain at this temp)
-        if log_post_fn is not None:
-            all_indices = jnp.arange(n_params)
-            log_posts = jax.vmap(lambda s: log_post_fn(s, all_indices, 1.0))(coupled_states)
-            # Mask out chains not at this temperature
+        if log_posts is not None:
+            # Use pre-computed log_posts, mask out chains not at this temperature
             masked_log_posts = jnp.where(temp_mask, log_posts, -jnp.inf)
             mode_idx = jnp.argmax(masked_log_posts)
             mode_state = coupled_states[mode_idx]
