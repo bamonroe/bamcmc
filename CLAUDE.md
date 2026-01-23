@@ -381,6 +381,8 @@ def proposal_fn(operand) -> (proposal, log_hastings_ratio, new_key):
 - `get_model_paths()`: Get standardized paths for model output
 - `split_history_by_subject()`: Split full history into per-subject files
 - `postprocess_all_histories()`: Batch process all history files
+- `save_prior_config()`: Save prior parameters to JSON for JAX-free plotting
+- `load_prior_config()`: Load prior parameters from JSON
 
 ```python
 from bamcmc import postprocess_all_histories
