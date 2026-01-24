@@ -39,9 +39,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-
-# Regularization for covariance matrix inversion
-COV_NUGGET = 1e-6
+from .common import COV_NUGGET
 
 
 def mode_weighted_proposal(operand):

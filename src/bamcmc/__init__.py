@@ -22,6 +22,7 @@ Public API:
     Checkpointing & Batch Utilities:
         save_checkpoint - Save MCMC state to disk for resuming
         load_checkpoint - Load MCMC state from disk
+        initialize_from_checkpoint - Initialize MCMC carry from loaded checkpoint
         combine_batch_histories - Combine multiple batch history files
         apply_burnin - Drop samples before a minimum iteration
         compute_rhat_from_history - Compute nested R-hat on combined history
@@ -67,6 +68,7 @@ from .settings import SettingSlot
 from .checkpoint_helpers import (
     save_checkpoint,
     load_checkpoint,
+    initialize_from_checkpoint,
     combine_batch_histories,
     apply_burnin,
     compute_rhat_from_history,

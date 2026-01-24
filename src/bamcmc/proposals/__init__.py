@@ -30,6 +30,17 @@ proposals are actually used by the model. This ensures JAX only traces the
 proposals needed, avoiding memory overhead from unused proposals.
 """
 
+# Common utilities
+from .common import (
+    COV_NUGGET,
+    regularize_covariance,
+    compute_mahalanobis,
+    compute_alpha_linear,
+    compute_alpha_g_scalar,
+    compute_alpha_g_vec,
+    compute_log_det_ratio,
+)
+
 from .self_mean import self_mean_proposal
 from .chain_mean import chain_mean_proposal
 from .mixture import mixture_proposal
@@ -45,6 +56,15 @@ from .mcov_mode import mcov_mode_proposal
 from .mcov_mode_vec import mcov_mode_vec_proposal
 
 __all__ = [
+    # Common utilities
+    'COV_NUGGET',
+    'regularize_covariance',
+    'compute_mahalanobis',
+    'compute_alpha_linear',
+    'compute_alpha_g_scalar',
+    'compute_alpha_g_vec',
+    'compute_log_det_ratio',
+    # Proposal functions
     'self_mean_proposal',
     'chain_mean_proposal',
     'mixture_proposal',

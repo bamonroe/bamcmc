@@ -53,50 +53,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-
-# Regularization for covariance matrix inversion
-COV_NUGGET = 1e-6
-
-
-def compute_alpha_g_vec(d_vec, block_mask, k_g, k_alpha):
-    """
-    Compute per-parameter α and scalar g with smooth transition.
-
-    No hard boundaries - parameters change continuously from d=0:
-    - At d=0: α=0 (pure chain_mean), g=1 (full variance)
-    - As d→∞: α→1 (track current), g→0 (cautious steps)
-
-    Args:
-        d_vec: Per-parameter distances from coupled mean (vector)
-        block_mask: Mask for valid parameters
-        k_g: Controls g decay rate (higher = maintain larger steps further from mean)
-        k_alpha: Controls α rise rate (higher = stay with chain_mean longer)
-
-    Returns:
-        alpha_vec: Per-parameter interpolation weights (vector)
-        g: Scalar variance scaling factor (minimum across valid params)
-    """
-    # g per parameter: decays from 1 toward 0 as d increases
-    g_vec = 1.0 / (1.0 + (d_vec / k_g) ** 2)
-
-    # d2 per parameter: distance in proposal metric
-    sqrt_g_vec = jnp.sqrt(jnp.maximum(g_vec, 1e-10))
-    d2_vec = d_vec / (sqrt_g_vec + 1e-10)
-
-    # α per parameter: rises from 0 toward 1 as d2 increases
-    d2_sq = d2_vec ** 2
-    k_alpha_sq = k_alpha ** 2
-    alpha_vec = d2_sq / (d2_sq + k_alpha_sq + 1e-10)
-
-    # Scalar g: use minimum across valid parameters (cautious approach)
-    # When any parameter is far, use small steps
-    g_masked = jnp.where(block_mask > 0, g_vec, 1.0)  # Set masked to 1 so they don't affect min
-    g = jnp.min(g_masked)
-
-    # Zero out alpha for masked parameters
-    alpha_vec = alpha_vec * block_mask
-
-    return alpha_vec, g
+from .common import COV_NUGGET, compute_alpha_g_vec, compute_log_det_ratio
 
 
 def mcov_smooth_proposal(operand):

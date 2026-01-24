@@ -16,6 +16,8 @@ To add a new setting:
 """
 
 from enum import IntEnum
+import warnings
+
 import numpy as np
 import jax.numpy as jnp
 
@@ -88,6 +90,13 @@ def build_settings_matrix(specs):
             for key, value in spec.settings.items():
                 if key in key_to_slot:
                     matrix[i, key_to_slot[key]] = float(value)
-                # Unknown keys are silently ignored
+                else:
+                    block_label = spec.label if hasattr(spec, 'label') and spec.label else f"block {i}"
+                    warnings.warn(
+                        f"Unknown setting '{key}' in {block_label}. "
+                        f"Valid settings: {list(key_to_slot.keys())}",
+                        UserWarning,
+                        stacklevel=2
+                    )
 
     return jnp.array(matrix)

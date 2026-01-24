@@ -52,18 +52,22 @@ bamcmc/
 │   │   ├── compile.py        # Kernel compilation and caching
 │   │   ├── diagnostics.py    # R-hat computation and acceptance rates
 │   │   └── utils.py          # Misc utilities
-│   ├── proposals/            # Proposal distribution implementations
+│   ├── proposals/            # 14 proposal distribution implementations
 │   │   ├── __init__.py
-│   │   ├── self_mean.py      # Random walk proposal
-│   │   ├── chain_mean.py     # Independent proposal
-│   │   ├── mixture.py        # Mixture of self/chain mean
-│   │   ├── multinomial.py    # Discrete parameter proposal
-│   │   ├── mala.py           # MALA (gradient-based) proposal
-    │   │   ├── mean_mala.py      # MEAN_MALA: gradient at coupled mean
-    │   │   ├── mean_weighted.py  # MEAN_WEIGHTED: adaptive interpolation
-    │   │   ├── mode_weighted.py  # MODE_WEIGHTED: interpolation toward mode
-    │   │   ├── mcov_weighted.py      # MCOV_WEIGHTED: covariance-scaled interpolation
-    │   │   └── mcov_weighted_vec.py  # MCOV_WEIGHTED_VEC: vectorized per-param MCOV
+│   │   ├── common.py         # Shared helpers (COV_NUGGET, compute_mahalanobis, etc.)
+│   │   ├── self_mean.py      # SELF_MEAN: random walk proposal
+│   │   ├── chain_mean.py     # CHAIN_MEAN: independent proposal
+│   │   ├── mixture.py        # MIXTURE: mix of self/chain mean
+│   │   ├── multinomial.py    # MULTINOMIAL: discrete parameter proposal
+│   │   ├── mala.py           # MALA: gradient-based proposal
+│   │   ├── mean_mala.py      # MEAN_MALA: gradient at coupled mean
+│   │   ├── mean_weighted.py  # MEAN_WEIGHTED: adaptive interpolation
+│   │   ├── mode_weighted.py  # MODE_WEIGHTED: interpolation toward mode
+│   │   ├── mcov_weighted.py  # MCOV_WEIGHTED: covariance-scaled interpolation
+│   │   ├── mcov_weighted_vec.py  # MCOV_WEIGHTED_VEC: vectorized per-param MCOV
+│   │   ├── mcov_smooth.py    # MCOV_SMOOTH: smooth distance-based scaling
+│   │   ├── mcov_mode.py      # MCOV_MODE: mode-targeting with scalar distance
+│   │   └── mcov_mode_vec.py  # MCOV_MODE_VEC: mode-targeting with per-param distance
 │   ├── batch_specs.py        # BlockSpec, SamplerType, ProposalType
 │   ├── registry.py           # Posterior registration system
 │   ├── settings.py           # Per-block settings (SettingSlot)
@@ -133,6 +137,9 @@ BlockSpec(
 - `MODE_WEIGHTED` (7): Interpolation toward the mode (highest log-posterior chain)
 - `MCOV_WEIGHTED` (8): Mean-covariance weighted interpolation with configurable blend
 - `MCOV_WEIGHTED_VEC` (9): Vectorized MCOV with per-parameter distance and interpolation
+- `MCOV_SMOOTH` (10): Smooth distance-based covariance and mean scaling
+- `MCOV_MODE` (11): Mode-targeting with scalar Mahalanobis distance
+- `MCOV_MODE_VEC` (12): Mode-targeting with per-parameter distances
 
 ### 3. Data Format
 
@@ -198,6 +205,37 @@ K = NUM_SUPERCHAINS (independent starting points)
 M = NUM_CHAINS / NUM_SUPERCHAINS (perturbed copies of each start)
 ```
 
+### 7. Parallel Tempering
+
+Parallel tempering runs chains at different "temperatures" to improve exploration of multimodal posteriors. Higher temperatures flatten the posterior, making it easier for chains to cross barriers between modes.
+
+**Configuration:**
+```python
+mcmc_config = {
+    # ... other config ...
+    'n_temperatures': 8,         # Number of temperature levels (1 = disabled)
+    'beta_min': 0.1,             # Minimum inverse temperature (hottest chain)
+}
+```
+
+**Temperature Ladder:**
+Temperatures are spaced geometrically between β=1.0 (target posterior) and β=beta_min:
+```
+β_i = beta_min^(i / (n_temperatures - 1))  for i = 0, 1, ..., n_temperatures-1
+```
+
+**DEO (Deterministic Even-Odd) Swap Scheme:**
+Adjacent temperature levels swap states using a deterministic alternating pattern:
+- Even rounds: attempt swaps (0↔1), (2↔3), (4↔5), ...
+- Odd rounds: attempt swaps (1↔2), (3↔4), (5↔6), ...
+
+Swaps are accepted with Metropolis probability based on the log-likelihood difference.
+
+**Output:**
+- History contains ALL chains (all temperatures)
+- `temperature_history` array tracks which temperature each chain has at each saved iteration
+- Filter to β=1 chains post-hoc for posterior inference
+
 ## Key Data Structures
 
 ### BlockArrays (frozen dataclass, JAX pytree)
@@ -249,10 +287,41 @@ class RunParams:
 
 ## Main Entry Points
 
-### rmcmc_single() - Single-Run Sampling
+### rmcmc() - Multi-Run Sampling (Recommended)
+
+**This is the recommended entry point for production sampling.** It provides:
+- Automatic checkpoint management (save after each run, resume on crash)
+- Flexible run scheduling (reset runs, resume runs)
+- Organized output directory structure
+- Graceful recovery from interruptions
 
 ```python
-from bamcmc import rmcmc_single  # Or: from bamcmc.mcmc.backend import rmcmc_single
+from bamcmc import rmcmc  # Or: from bamcmc.mcmc.backend import rmcmc
+
+summary = rmcmc(
+    mcmc_config,
+    data,
+    output_dir='./output',
+    run_schedule=[("reset", 3), ("resume", 5)],  # 3 reset runs, then 5 resume runs
+    calculate_rhat=True,
+    burn_in_fresh=True,    # Only burn-in on fresh/reset runs
+    reset_noise_scale=0.1,
+)
+
+# summary dict containing:
+#   - history_files: List of (run_idx, filepath) tuples
+#   - checkpoint_files: List of checkpoint filepaths
+#   - run_log: List of dicts with per-run details
+#   - final_iteration: Iteration after all runs
+#   - total_runs_completed: Number of runs completed
+```
+
+### rmcmc_single() - Single-Run Sampling
+
+For custom workflows or single-shot sampling without checkpoint management:
+
+```python
+from bamcmc import rmcmc_single
 
 results, checkpoint = rmcmc_single(
     mcmc_config,
@@ -274,30 +343,7 @@ results, checkpoint = rmcmc_single(
 #   - M: Subchains per superchain
 #   - thin_iteration: Thinning interval used
 #
-# checkpoint dict for saving/resuming
-```
-
-### rmcmc() - Multi-Run Sampling
-
-```python
-from bamcmc import rmcmc  # Or: from bamcmc.mcmc.backend import rmcmc
-
-summary = rmcmc(
-    mcmc_config,
-    data,
-    output_dir='./output',
-    run_schedule=[("reset", 3), ("resume", 5)],  # 3 reset runs, then 5 resume runs
-    calculate_rhat=True,
-    burn_in_fresh=True,    # Only burn-in on fresh/reset runs
-    reset_noise_scale=0.1,
-)
-
-# summary dict containing:
-#   - history_files: List of (run_idx, filepath) tuples
-#   - checkpoint_files: List of checkpoint filepaths
-#   - run_log: List of dicts with per-run details
-#   - final_iteration: Iteration after all runs
-#   - total_runs_completed: Number of runs completed
+# checkpoint dict for saving/resuming (caller manages persistence)
 ```
 
 ### run_benchmark() - Performance Testing

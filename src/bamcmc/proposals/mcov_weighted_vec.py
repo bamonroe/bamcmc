@@ -47,9 +47,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-
-# Regularization for covariance matrix inversion
-COV_NUGGET = 1e-6
+from .common import COV_NUGGET
 
 
 def mcov_weighted_vec_proposal(operand):
@@ -100,11 +98,15 @@ def mcov_weighted_vec_proposal(operand):
     # === STEP 2: Per-parameter covariance scale g_vec (quadratic) ===
     # g_i = 1 + beta * d1_i^2 / (d1_i^2 + k^2)
     # Quadratic ensures g is flat near d=0 (chain_mean-like at equilibrium)
-    g_vec_current = 1.0 + cov_beta * d1_sq_current / (d1_sq_current + k_sq + 1e-10)
+    # When beta<0: g<1, minimum is (1+beta) when d→∞
+    g_vec_current_raw = 1.0 + cov_beta * d1_sq_current / (d1_sq_current + k_sq + 1e-10)
+    # Safety clamp: ensure g >= 0.1 to prevent numerical issues with sqrt(g)
+    # Also clamp to reasonable max to prevent explosion
+    g_vec_current = jnp.clip(g_vec_current_raw, 0.1, 10.0)
 
     # === STEP 3: Per-parameter distance in weighted metric ===
     # d2_i = d1_i / sqrt(g_i)
-    sqrt_g_current = jnp.sqrt(jnp.maximum(g_vec_current, 1e-10))
+    sqrt_g_current = jnp.sqrt(g_vec_current)  # Safe due to clamp above
     d2_vec_current = d1_vec_current / sqrt_g_current
     d2_sq_current = d2_vec_current * d2_vec_current
 
@@ -131,8 +133,9 @@ def mcov_weighted_vec_proposal(operand):
     d1_sq_proposal = d1_vec_proposal * d1_vec_proposal
 
     # Quadratic g for reverse direction
-    g_vec_proposal = 1.0 + cov_beta * d1_sq_proposal / (d1_sq_proposal + k_sq + 1e-10)
-    sqrt_g_proposal = jnp.sqrt(jnp.maximum(g_vec_proposal, 1e-10))
+    g_vec_proposal_raw = 1.0 + cov_beta * d1_sq_proposal / (d1_sq_proposal + k_sq + 1e-10)
+    g_vec_proposal = jnp.clip(g_vec_proposal_raw, 0.1, 10.0)  # Same safety clamp as forward
+    sqrt_g_proposal = jnp.sqrt(g_vec_proposal)  # Safe due to clamp
     d2_vec_proposal = d1_vec_proposal / sqrt_g_proposal
     d2_sq_proposal = d2_vec_proposal * d2_vec_proposal
 

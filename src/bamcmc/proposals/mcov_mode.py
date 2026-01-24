@@ -54,41 +54,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-
-# Regularization for covariance matrix inversion
-COV_NUGGET = 1e-6
-
-
-def compute_alpha_g_scalar(d, k_g, k_alpha):
-    """
-    Compute scalar α and g with smooth transition based on Mahalanobis distance.
-
-    No hard boundaries - values change continuously from d=0:
-    - At d=0: α=0 (pure mode-targeting), g=1 (full variance)
-    - As d→∞: α→1 (track current), g→0 (cautious steps)
-
-    Args:
-        d: Scalar Mahalanobis distance from mode
-        k_g: Controls g decay rate (higher = maintain larger steps further from mode)
-        k_alpha: Controls α rise rate (higher = stay with mode-targeting longer)
-
-    Returns:
-        alpha: Scalar interpolation weight
-        g: Scalar variance scaling factor
-    """
-    # g: decays from 1 toward 0 as d increases
-    g = 1.0 / (1.0 + (d / k_g) ** 2)
-
-    # d2: distance in proposal metric
-    sqrt_g = jnp.sqrt(jnp.maximum(g, 1e-10))
-    d2 = d / (sqrt_g + 1e-10)
-
-    # α: rises from 0 toward 1 as d2 increases
-    d2_sq = d2 ** 2
-    k_alpha_sq = k_alpha ** 2
-    alpha = d2_sq / (d2_sq + k_alpha_sq + 1e-10)
-
-    return alpha, g
+from .common import COV_NUGGET, compute_alpha_g_scalar
 
 
 def mcov_mode_proposal(operand):
