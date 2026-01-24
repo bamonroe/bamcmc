@@ -98,13 +98,47 @@ register_posterior('my_model', {
     # Required:
     'log_posterior': fn(chain_state, param_indices, data) -> scalar,
     'batch_type': fn(mcmc_config, data) -> List[BlockSpec],
-    'initial_vector': fn(mcmc_config, data) -> array,
+    'initial_vector': fn(mcmc_config, data) -> flat_array,
+    'direct_sampler': fn(key, chain_state, param_indices, data) -> (state, key),
 
     # Optional:
-    'direct_sampler': fn(key, chain_state, param_indices, data) -> (state, key),
     'generated_quantities': fn(chain_state, data) -> array,
     'get_num_gq': fn(mcmc_config, data) -> int,
 })
+```
+
+**CRITICAL: initial_vector sizing**
+
+The `initial_vector` function must return a flat array of size:
+```
+size = (num_chains_a + num_chains_b) × n_params
+```
+
+**NOT** `num_superchains` - that's only for R-hat diagnostics.
+
+```python
+def initial_vector(mcmc_config, data):
+    n_params = get_n_params(data)
+    # CORRECT: use num_chains_a + num_chains_b
+    num_chains = mcmc_config['num_chains_a'] + mcmc_config['num_chains_b']
+    rng = np.random.default_rng(mcmc_config.get('rng_seed', 42))
+    return rng.normal(0, 0.1, size=(num_chains, n_params)).flatten()
+```
+
+**CRITICAL: direct_sampler is always required**
+
+Even for MH-only models, `direct_sampler` must be provided and return valid values.
+JAX traces all branches of `lax.switch` during compilation, so raising exceptions will fail:
+
+```python
+# WRONG - causes compilation error
+def direct_sampler(key, chain_state, param_indices, data):
+    raise NotImplementedError("MH only")
+
+# CORRECT - placeholder that returns valid values
+def direct_sampler(key, chain_state, param_indices, data):
+    """Placeholder for MH-only models."""
+    return chain_state, key
 ```
 
 ### 2. Block Specifications
@@ -141,6 +175,26 @@ BlockSpec(
 - `MCOV_MODE` (11): Mode-targeting with scalar Mahalanobis distance
 - `MCOV_MODE_VEC` (12): Mode-targeting with per-parameter distances
 
+**Settings by Proposal Type:**
+
+| Proposal | Key Settings | Defaults |
+|----------|--------------|----------|
+| SELF_MEAN | `cov_mult` | 1.0 |
+| CHAIN_MEAN | `cov_mult` | 1.0 |
+| MIXTURE | `alpha`, `cov_mult` | 0.5, 1.0 |
+| MULTINOMIAL | `alpha`, `n_categories` | 0.5, 2 |
+| MALA | `cov_mult` | 1.0 |
+| MEAN_MALA | `cov_mult` | 1.0 |
+| MEAN_WEIGHTED | `cov_mult` | 1.0 |
+| MODE_WEIGHTED | `cov_mult` | 1.0 |
+| MCOV_WEIGHTED | `cov_mult`, `cov_beta` | 1.0, -0.5 |
+| MCOV_WEIGHTED_VEC | `cov_mult`, `cov_beta` | 1.0, -0.5 |
+| MCOV_SMOOTH | `cov_mult`, `k_g`, `k_alpha` | 1.0, 10.0, 3.0 |
+| MCOV_MODE | `cov_mult`, `k_g`, `k_alpha` | 1.0, 10.0, 3.0 |
+| MCOV_MODE_VEC | `cov_mult`, `k_g`, `k_alpha` | 1.0, 10.0, 3.0 |
+
+**Note:** Unrecognized settings keys will trigger a warning (e.g., typo `cov_multt`).
+
 ### 3. Data Format
 
 Data is passed as a dict with three tuple fields:
@@ -153,33 +207,63 @@ data = {
 }
 ```
 
+**Important constraints:**
+
+1. **static must be hashable Python scalars** (used for JAX compilation caching):
+   ```python
+   # WRONG - numpy scalars may cause hashing issues
+   data["static"] = (np.int64(5), np.float64(1.0))
+
+   # CORRECT - use Python scalars
+   data["static"] = (int(5), float(1.0))
+   ```
+
+2. **Arrays should be C-contiguous** for performance:
+   ```python
+   # May cause issues
+   data["float"] = (X[:, ::2], y)  # Non-contiguous slice
+
+   # Correct
+   data["float"] = (np.ascontiguousarray(X[:, ::2]), y)
+   ```
+
+3. **Empty tuples required for unused fields:**
+   ```python
+   data = {
+       "static": (n_obs,),
+       "int": (),      # Required even if empty
+       "float": (X, y),
+   }
+   ```
+
 ### 4. MCMC Configuration
 
-All config keys use lowercase with underscores:
+**All config keys use lowercase with underscores** (not UPPERCASE).
 
 ```python
 mcmc_config = {
+    # === REQUIRED ===
     'posterior_id': 'my_model',      # Registered posterior name
-    'use_double': True,              # float64 precision
-    'rng_seed': 1977,                # Random seed
-
-    # Chain configuration
     'num_chains_a': 500,             # Chains in group A
     'num_chains_b': 500,             # Chains in group B
-    'num_superchains': 100,          # K superchains (for nested R-hat)
-    # M = num_chains / num_superchains subchains per superchain
 
-    # Iteration settings
-    'benchmark': 100,                # Benchmark iterations (for timing)
-    'burn_iter': 5000,               # Burn-in iterations
-    'num_collect': 10000,            # Collection iterations
-    'thin_iteration': 10,            # Thinning interval
+    # === OPTIONAL (with defaults) ===
+    'use_double': True,              # float64 precision (default: False)
+    'rng_seed': 1977,                # Random seed (default: system time)
+    'num_superchains': 100,          # K superchains for R-hat (default: num_chains_a // 5)
+    'burn_iter': 5000,               # Burn-in iterations (default: 1000)
+    'num_collect': 10000,            # Collection iterations (default: 1000)
+    'thin_iteration': 10,            # Thinning interval (default: 1)
+    'benchmark': 100,                # Benchmark iterations (default: 0)
+    'save_likelihoods': False,       # Save log-likelihood history (default: False)
 
-    # Optional
-    'save_likelihoods': False,       # Save log-likelihood history
-    'proposal': 'chain_mean',        # Default proposal type
+    # Parallel tempering (optional)
+    'n_temperatures': 1,             # Number of temperature levels (default: 1 = disabled)
+    'beta_min': 0.1,                 # Minimum inverse temperature (default: 0.1)
 }
 ```
+
+**Common mistake:** Using `NUM_SUPERCHAINS` (uppercase) will silently use the default value.
 
 ### 5. Coupled A/B Chain Architecture
 
@@ -521,7 +605,7 @@ avoiding memory overhead from unused ones.
 
 ```python
 def my_log_posterior(chain_state, param_indices, data):
-    """Log posterior for a parameter block."""
+    """Log posterior for a parameter block. Must be JAX-traceable."""
     params = chain_state[param_indices]
     # ... compute log posterior
     return log_prob
@@ -534,20 +618,26 @@ def my_batch_specs(mcmc_config, data):
                   proposal_type=ProposalType.CHAIN_MEAN, label=f"Subj_{i}")
         for i in range(n_subjects)
     ] + [
-        BlockSpec(size=1, sampler_type=SamplerType.DIRECT_CONJUGATE,
-                  direct_sampler_fn=my_hyper_sampler, label="Hyperprior")
+        BlockSpec(size=1, sampler_type=SamplerType.METROPOLIS_HASTINGS,
+                  proposal_type=ProposalType.CHAIN_MEAN, label="Hyperprior")
     ]
 
 def my_initial_vector(mcmc_config, data):
-    """Initial values for all chains."""
-    K = mcmc_config['NUM_SUPERCHAINS']
-    n_params = ...
-    return np.random.randn(K, n_params).flatten()
+    """Initial values. MUST return size = (num_chains_a + num_chains_b) * n_params."""
+    n_params = data['static'][0] * 2 + 1  # example calculation
+    num_chains = mcmc_config['num_chains_a'] + mcmc_config['num_chains_b']  # NOT num_superchains!
+    rng = np.random.default_rng(mcmc_config.get('rng_seed', 42))
+    return rng.normal(0, 0.1, size=(num_chains, n_params)).flatten()
+
+def my_direct_sampler(key, chain_state, param_indices, data):
+    """Placeholder - required even for MH-only models."""
+    return chain_state, key
 
 register_posterior('my_model', {
     'log_posterior': my_log_posterior,
     'batch_type': my_batch_specs,
     'initial_vector': my_initial_vector,
+    'direct_sampler': my_direct_sampler,  # Required!
 })
 ```
 
@@ -620,6 +710,156 @@ updates that can improve mixing for the discrete indicator.
 3. **Trace plots**: Plot `history[:, chain_idx, param_idx]` over iterations
 4. **Block labels**: Use `label` in BlockSpec for clearer error messages
 5. **Validation errors**: `validate_mcmc_config()` catches common issues
+
+## JAX-Compatible Coding Patterns
+
+When writing `log_posterior` and other functions that JAX traces:
+
+### Module-Level Functions Required
+
+For compilation caching to work, define functions at module level (not closures):
+
+```python
+# WRONG - closure won't cache properly
+def make_log_posterior(hyperparams):
+    def log_posterior(chain_state, param_indices, data):
+        return compute(hyperparams)  # Uses closure variable
+    return log_posterior
+
+# CORRECT - module-level, get hyperparams from data
+def log_posterior(chain_state, param_indices, data):
+    hyperparams = data["static"][0]  # From data, not closure
+    return compute(hyperparams)
+```
+
+### Avoid Python Loops for Large Iterations
+
+Python `for` loops are unrolled during tracing. For large N, use `lax.fori_loop` or `vmap`:
+
+```python
+# SLOW - N iterations unrolled, huge trace
+def log_posterior(chain_state, param_indices, data):
+    n_items = data["static"][0]
+    log_lik = 0.0
+    for i in range(n_items):  # Unrolled!
+        log_lik += item_lik(i, ...)
+    return log_lik
+
+# FAST - single traced loop
+def log_posterior(chain_state, param_indices, data):
+    n_items = data["static"][0]
+    def body(i, acc):
+        return acc + item_lik(i, ...)
+    return jax.lax.fori_loop(0, n_items, body, 0.0)
+
+# FASTEST - vectorized
+def log_posterior(chain_state, param_indices, data):
+    return jnp.sum(jax.vmap(item_lik)(jnp.arange(n_items), ...))
+```
+
+### No Python Control Flow on Traced Values
+
+```python
+# WRONG - x is a tracer, not a concrete value
+if x > 0:
+    return log_prob
+
+# CORRECT - use jnp.where for conditional logic
+return jnp.where(x > 0, log_prob, -jnp.inf)
+```
+
+## Troubleshooting
+
+### Common Error Messages
+
+| Error Message | Likely Cause | Solution |
+|---------------|--------------|----------|
+| `cannot reshape array of shape (X,) into shape (Y, Z)` | `initial_vector` returns wrong size | Use `(num_chains_a + num_chains_b) * n_params` |
+| `KeyError: 'direct_sampler'` | Missing `direct_sampler` in registration | Add placeholder function that returns `(chain_state, key)` |
+| `NotImplementedError` during compilation | `direct_sampler` raises exception | Make it return valid values (JAX traces all branches) |
+| `Abstract tracer value encountered` | Python control flow on JAX traced values | Use `jnp.where`, `lax.cond`, `lax.switch` |
+| `jax.errors.ConcretizationTypeError` | Using traced value as array shape/index | Move shape computation before JAX tracing |
+| `cholesky: decomposition failed` | Ill-conditioned covariance matrix | Check for NaN/Inf in parameters, increase `COV_NUGGET` |
+
+### Initialization Issues
+
+**Symptom**: All chains stuck or immediately divergent
+
+**Solutions**:
+1. Check `initial_vector` returns sensible parameter values
+2. Verify parameters are in prior support (e.g., positive for variance)
+3. Use smaller initial variance (`rng.normal(0, 0.1, ...)` not `0, 1`)
+4. Check `log_posterior` returns finite values for initial state
+
+### Slow Compilation
+
+**Symptom**: First run takes minutes instead of seconds
+
+**Solutions**:
+1. Reduce Python loops in `log_posterior` (use `vmap`/`fori_loop`)
+2. Avoid creating arrays inside traced functions
+3. Check for accidental recompilation (data shape changes)
+4. Clear JAX cache if corrupted: `rm -rf ./jax_cache/`
+
+## Minimal Template
+
+Copy this as a starting point for new posteriors:
+
+```python
+"""Minimal bamcmc posterior template."""
+import numpy as np
+import jax.numpy as jnp
+from bamcmc import register_posterior, BlockSpec, SamplerType, ProposalType
+
+MODEL_ID = "my_model"
+
+def log_posterior(chain_state, param_indices, data):
+    """Compute log posterior. Must be JAX-traceable."""
+    params = chain_state[param_indices]
+    n_params = data["static"][0]
+
+    # Example: simple Gaussian prior
+    log_prior = -0.5 * jnp.sum(params ** 2)
+
+    # Your log likelihood here
+    X, y = data["float"]
+    # log_lik = ...
+
+    return log_prior  # + log_lik
+
+def batch_type(mcmc_config, data):
+    """Define parameter blocks."""
+    n_params = data["static"][0]
+    return [
+        BlockSpec(
+            size=n_params,
+            sampler_type=SamplerType.METROPOLIS_HASTINGS,
+            proposal_type=ProposalType.CHAIN_MEAN,
+            settings={"cov_mult": 1.0},
+            label="params",
+        )
+    ]
+
+def initial_vector(mcmc_config, data):
+    """Initial values. Size = (num_chains_a + num_chains_b) * n_params."""
+    n_params = data["static"][0]
+    num_chains = mcmc_config["num_chains_a"] + mcmc_config["num_chains_b"]
+    rng = np.random.default_rng(mcmc_config.get("rng_seed", 42))
+    return rng.normal(0, 0.1, size=(num_chains, n_params)).flatten()
+
+def direct_sampler(key, chain_state, param_indices, data):
+    """Placeholder for MH-only models. Must return valid values."""
+    return chain_state, key
+
+def register():
+    """Call this before sampling."""
+    register_posterior(MODEL_ID, {
+        "log_posterior": log_posterior,
+        "batch_type": batch_type,
+        "initial_vector": initial_vector,
+        "direct_sampler": direct_sampler,
+    })
+```
 
 ## Dependencies
 
