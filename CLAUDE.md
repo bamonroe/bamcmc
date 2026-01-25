@@ -507,6 +507,29 @@ def proposal_fn(operand) -> (proposal, log_hastings_ratio, new_key):
 - `combine_batch_histories()`: Merge multiple batch files
 - `apply_burnin()`: Remove samples before iteration threshold
 
+**Output Management:**
+- `scan_checkpoints()`: Find existing checkpoint and history files
+- `clean_model_files()`: Delete old files with configurable modes
+- `get_model_paths()`: Get standardized paths for model output
+- `ensure_model_dirs()`: Create output directory structure
+- `get_latest_checkpoint()`: Find most recent checkpoint file
+
+```python
+from bamcmc import scan_checkpoints, clean_model_files
+
+# Check what files exist
+scan = scan_checkpoints(output_dir, model_name)
+print(f"Checkpoints: {scan['checkpoint_files']}")
+print(f"Histories: {scan['history_files']}")
+
+# Clean modes:
+#   'all'         - Delete everything (checkpoints + histories)
+#   'keep_latest' - Delete histories and old checkpoints, keep latest checkpoint
+#   'histories'   - Delete only history files
+
+clean_model_files(output_dir, model_name, mode='keep_latest')
+```
+
 **Post-Processing (Memory-Efficient Analysis):**
 - `get_model_paths()`: Get standardized paths for model output
 - `split_history_by_subject()`: Split full history into per-subject files
