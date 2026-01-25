@@ -502,33 +502,22 @@ def proposal_fn(operand) -> (proposal, log_hastings_ratio, new_key):
 
 ### checkpoint_helpers.py
 
-**Checkpoint Management:**
-- `save_checkpoint()` / `load_checkpoint()`: Persist chain states
-- `combine_batch_histories()`: Merge multiple batch files
-- `apply_burnin()`: Remove samples before iteration threshold
+**Checkpoint I/O:**
+- `save_checkpoint(filepath, carry, user_config, metadata=None)`: Save chain states to disk
+- `load_checkpoint(filepath)`: Load checkpoint, returns dict with states, keys, iteration, etc.
+- `initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, ...)`: Create MCMC carry from checkpoint
+
+**History Processing:**
+- `combine_batch_histories(batch_paths)`: Merge multiple history files into one
+- `apply_burnin(history, iterations, likelihoods=None, min_iteration=0)`: Filter samples before threshold
+- `compute_rhat_from_history(history, K, M)`: Compute R-hat on combined history
 
 **Output Management:**
-- `scan_checkpoints()`: Find existing checkpoint and history files
-- `clean_model_files()`: Delete old files with configurable modes
+- `scan_checkpoints(output_dir, model_name)`: Find existing checkpoint and history files
+- `get_latest_checkpoint(output_dir, model_name)`: Get path to most recent checkpoint
+- `clean_model_files(output_dir, model_name, mode='all')`: Delete output files (see below)
 - `get_model_paths()`: Get standardized paths for model output
 - `ensure_model_dirs()`: Create output directory structure
-- `get_latest_checkpoint()`: Find most recent checkpoint file
-
-```python
-from bamcmc import scan_checkpoints, clean_model_files
-
-# Check what files exist
-scan = scan_checkpoints(output_dir, model_name)
-print(f"Checkpoints: {scan['checkpoint_files']}")
-print(f"Histories: {scan['history_files']}")
-
-# Clean modes:
-#   'all'         - Delete everything (checkpoints + histories)
-#   'keep_latest' - Delete histories and old checkpoints, keep latest checkpoint
-#   'histories'   - Delete only history files
-
-clean_model_files(output_dir, model_name, mode='keep_latest')
-```
 
 **Post-Processing (Memory-Efficient Analysis):**
 - `get_model_paths()`: Get standardized paths for model output
@@ -558,6 +547,98 @@ postprocess_all_histories(
 ### reset_utils.py
 - `generate_reset_vector()`: Create new starting points from checkpoint
 - Uses cross-chain mean + small noise to rescue stuck chains
+
+## Output Directory Management
+
+The package provides utilities for managing checkpoint and history files across multiple runs.
+
+### Directory Structure
+
+When using `rmcmc()` with `use_nested_structure=True` (default):
+
+```
+{output_dir}/{model_name}/
+├── checkpoints/
+│   ├── checkpoint_000.npz    # Initial state (iteration=0)
+│   ├── checkpoint_001.npz    # After 1st sampling run
+│   ├── checkpoint_002.npz    # After 2nd sampling run
+│   └── ...
+└── history/
+    └── full/
+        ├── history_000.npz   # Samples from 1st run
+        ├── history_001.npz   # Samples from 2nd run
+        └── ...
+```
+
+### Scanning for Existing Files
+
+```python
+from bamcmc import scan_checkpoints, get_latest_checkpoint
+
+# Find all checkpoints and histories
+scan = scan_checkpoints(output_dir, model_name)
+# Returns: {
+#   'checkpoint_files': [(run_idx, path), ...],
+#   'history_files': [(run_idx, path), ...],
+#   'latest_checkpoint': path or None,
+#   'latest_run_index': int or -1,
+# }
+
+# Get just the latest checkpoint path
+latest = get_latest_checkpoint(output_dir, model_name)  # path or None
+```
+
+### Cleaning Output Files
+
+The `clean_model_files()` function provides two cleaning modes:
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| `'all'` | Delete all checkpoints and histories | Complete fresh start |
+| `'keep_latest'` | Delete histories and old checkpoints, **keep latest checkpoint** | Normal workflow (allows resume) |
+
+```python
+from bamcmc import clean_model_files
+
+# Delete everything (fresh start)
+result = clean_model_files(output_dir, model_name, mode='all')
+
+# Keep latest checkpoint for resume (default for iterative workflows)
+result = clean_model_files(output_dir, model_name, mode='keep_latest')
+
+# Result contains:
+# {
+#   'deleted_checkpoints': [paths...],
+#   'deleted_histories': [paths...],
+#   'kept_checkpoint': path or None,
+# }
+```
+
+### Recommended Workflow
+
+For iterative MCMC workflows, the recommended pattern is:
+
+1. **First run**: No checkpoint exists, starts fresh
+2. **Subsequent runs**: Resume from latest checkpoint
+3. **Before each session**: Clean with `mode='keep_latest'` to remove old histories but preserve resume capability
+
+```python
+from bamcmc import rmcmc, clean_model_files
+
+# Clean old files but keep latest checkpoint
+clean_model_files(output_dir, model_name, mode='keep_latest')
+
+# Run MCMC - will resume if checkpoint exists, else start fresh
+summary = rmcmc(
+    mcmc_config,
+    data,
+    output_dir=output_dir,
+    run_schedule=[("resume", 5)],  # 5 resume runs
+    burn_in_fresh=True,            # Only burn-in on fresh runs
+)
+```
+
+**Key behavior**: With `mode='keep_latest'`, if no checkpoint exists, `resume` mode automatically starts fresh. This means you rarely need explicit `mode='all'` unless you want to discard learned posterior state.
 
 ## JAX Compilation Caching
 
