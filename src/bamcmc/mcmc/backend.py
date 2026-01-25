@@ -79,6 +79,43 @@ __all__ = [
 # RMCMC HELPER FUNCTIONS
 # =============================================================================
 
+def _validate_checkpoint_compatibility(
+    checkpoint: Dict[str, Any],
+    block_arrays: BlockArrays,
+    user_config: Dict[str, Any],
+) -> None:
+    """
+    Validate that a checkpoint is compatible with the current model configuration.
+
+    Args:
+        checkpoint: Loaded checkpoint dict
+        block_arrays: Block array specifications from current model
+        user_config: Current user configuration
+
+    Raises:
+        ValueError: If checkpoint is incompatible with current configuration
+    """
+    # Check parameter count matches
+    expected_params = block_arrays.total_params
+    checkpoint_params = checkpoint['num_params']
+
+    if expected_params != checkpoint_params:
+        raise ValueError(
+            f"Checkpoint parameter count mismatch: checkpoint has {checkpoint_params} parameters, "
+            f"but current model expects {expected_params}. "
+            f"This can happen if the model definition changed or you're loading a checkpoint "
+            f"from a different model."
+        )
+
+    # Posterior ID is already checked in initialize_from_checkpoint, but check here
+    # for better error messages before we start processing
+    if checkpoint['posterior_id'] != user_config['posterior_id']:
+        raise ValueError(
+            f"Checkpoint posterior mismatch: checkpoint is for '{checkpoint['posterior_id']}', "
+            f"but current config specifies '{user_config['posterior_id']}'."
+        )
+
+
 def _initialize_chains(
     resume_from: Optional[str],
     reset_from: Optional[str],
@@ -125,6 +162,7 @@ def _initialize_chains(
         # --- RESUME MODE: Continue from exact checkpoint state ---
         print(f"Loading checkpoint from {resume_from}...")
         checkpoint = load_checkpoint(resume_from)
+        _validate_checkpoint_compatibility(checkpoint, block_arrays, user_config)
         initial_carry, user_config = initialize_from_checkpoint(
             checkpoint,
             user_config,
@@ -143,6 +181,7 @@ def _initialize_chains(
         print(f"Resetting chains from checkpoint {reset_from}...")
 
         checkpoint = load_checkpoint(reset_from)
+        _validate_checkpoint_compatibility(checkpoint, block_arrays, user_config)
         n_subjects = runtime_ctx['data']['static'][0]
         K = user_config.get('num_superchains', user_config['num_chains'])
         M = user_config['num_chains'] // K
@@ -515,9 +554,9 @@ def rmcmc_single(
     print("Validating inputs...", flush=True)
     try:
         validate_mcmc_inputs(user_config, runtime_ctx['data'], block_specs)
-        print("✓ Validation passed", flush=True)
+        print("[OK] Validation passed", flush=True)
     except ValueError as e:
-        print(f"✗ Validation failed:\n{e}", flush=True)
+        print(f"[FAIL] Validation failed:\n{e}", flush=True)
         raise
 
     print(f"Starting sampling for {posterior_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)

@@ -960,58 +960,24 @@ See `/workspace/code/posteriors/mix2_mh_ncp_bhm.py` for a complete implementatio
 
 This section documents known issues and potential improvements identified during code review.
 
-### High Priority
+### High Priority (All Fixed)
 
-#### 1. Emoji in Error Output (error_handling.py)
+#### 1. ~~Emoji in Error Output~~ (FIXED)
 
-**Issue**: Diagnostic output uses emojis (🔴, ⚠️, 📊, ✅) which may not render properly in all terminals and make logs harder to parse programmatically.
+**Status**: Fixed. Replaced emojis with text-based indicators (`[ERROR]`, `[WARN]`, `[INFO]`, `[OK]`) in:
+- `src/bamcmc/error_handling.py`
+- `src/bamcmc/mcmc/backend.py`
 
-**Location**: `src/bamcmc/error_handling.py`
+#### 2. ~~Silent Failure on Unknown Settings Keys~~ (ALREADY IMPLEMENTED)
 
-**Suggested Fix**: Replace with text-based indicators:
-```python
-# Current
-print(f"🔴 Chain {i} appears stuck...")
+**Status**: Already implemented. The code in `settings.py:93-100` already warns on unknown keys.
 
-# Suggested
-print(f"[ERROR] Chain {i} appears stuck...")
-```
+#### 3. ~~Missing Checkpoint Compatibility Validation~~ (FIXED)
 
-#### 2. Silent Failure on Unknown Settings Keys (settings.py)
-
-**Issue**: Unknown setting keys are silently ignored. A typo like `'cov_multt'` would silently fail with no warning.
-
-**Location**: `src/bamcmc/settings.py:91`
-
-**Suggested Fix**:
-```python
-for key, value in spec.settings.items():
-    if key in key_to_slot:
-        matrix[i, key_to_slot[key]] = float(value)
-    else:
-        import warnings
-        warnings.warn(f"Unknown setting '{key}' in block '{spec.label or i}', ignoring")
-```
-
-#### 3. Missing Checkpoint Compatibility Validation (checkpoint_helpers.py)
-
-**Issue**: When resuming or resetting from a checkpoint, there's no validation that the checkpoint matches the current model configuration. Mismatched parameter counts cause cryptic errors.
-
-**Location**: `src/bamcmc/checkpoint_helpers.py`
-
-**Suggested Fix**: Add validation before resume/reset:
-```python
-def validate_checkpoint_compatibility(checkpoint, mcmc_config, data):
-    """Validate checkpoint is compatible before resume/reset."""
-    expected_params = compute_expected_params(mcmc_config, data)
-    checkpoint_params = checkpoint['states_A'].shape[1]
-
-    if expected_params != checkpoint_params:
-        raise ValueError(
-            f"Checkpoint has {checkpoint_params} parameters, "
-            f"but model expects {expected_params}"
-        )
-```
+**Status**: Fixed. Added `_validate_checkpoint_compatibility()` in `src/bamcmc/mcmc/backend.py` that:
+- Validates parameter count matches before resume/reset
+- Checks posterior ID matches
+- Provides clear error messages when checkpoint is incompatible
 
 ### Medium Priority
 
@@ -1119,13 +1085,13 @@ The following patterns are well-implemented and should be preserved:
 
 ### Summary Table
 
-| Priority | Issue | File | Effort | Impact |
-|----------|-------|------|--------|--------|
-| High | Emoji in diagnostics | error_handling.py | Low | Medium |
-| High | Silent unknown settings | settings.py | Low | High |
-| High | Checkpoint compatibility | checkpoint_helpers.py | Medium | High |
-| Medium | Magic number docs | diagnostics.py | Low | Low |
-| Medium | TypedDict for data | types.py | Low | Medium |
-| Medium | Settings auto-mapping | settings.py | Low | Low |
-| Low | Dispatch assertion | sampling.py | Low | Low |
-| Low | Test coverage | tests/ | High | Medium |
+| Priority | Issue | File | Status |
+|----------|-------|------|--------|
+| ~~High~~ | ~~Emoji in diagnostics~~ | error_handling.py, backend.py | **FIXED** |
+| ~~High~~ | ~~Silent unknown settings~~ | settings.py | **Already implemented** |
+| ~~High~~ | ~~Checkpoint compatibility~~ | backend.py | **FIXED** |
+| Medium | Magic number docs | diagnostics.py | Open |
+| Medium | TypedDict for data | types.py | Open |
+| Medium | Settings auto-mapping | settings.py | Open |
+| Low | Dispatch assertion | sampling.py | Open |
+| Low | Test coverage | tests/ | Open |

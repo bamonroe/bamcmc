@@ -116,19 +116,19 @@ def diagnose_sampler_issues(history, mcmc_config, diagnostics):
 def print_diagnostics(diagnostics):
     """Pretty-print diagnostics from diagnose_sampler_issues."""
     if diagnostics['issues']:
-        print("\n🔴 ISSUES:")
+        print("\n[ERROR] ISSUES:")
         for issue in diagnostics['issues']:
             print(f"  - {issue}")
 
     if diagnostics['warnings']:
-        print("\n⚠️  WARNINGS:")
+        print("\n[WARN] WARNINGS:")
         for warning in diagnostics['warnings']:
             print(f"  - {warning}")
 
     if diagnostics['info']:
-        print("\n📊 INFO:")
+        print("\n[INFO] INFO:")
         for info in diagnostics['info']:
             print(f"  - {info}")
 
     if not diagnostics['issues'] and not diagnostics['warnings']:
-        print("\n✅ No issues detected")
+        print("\n[OK] No issues detected")
