@@ -21,7 +21,8 @@ from .scan import mcmc_scan_body_offload
 
 
 # --- CONSTANTS ---
-CHUNK_SIZE = 100
+# Default chunk size (used as fallback; actual value comes from run_params.CHUNK_SIZE)
+DEFAULT_CHUNK_SIZE = 100
 
 # --- COMPILED FUNCTION CACHE ---
 # Cache compiled MCMC kernels by configuration hash (in-memory, within session)
@@ -39,7 +40,7 @@ def _compute_cache_key(user_config: Dict[str, Any], data: Dict[str, Any], block_
     - Number of parameters
     - Block structure
     - Dtype settings
-    - RunParams values (all static args including START_ITERATION)
+    - RunParams values (including CHUNK_SIZE for loop bound)
     """
     # Extract shapes from data tuples
     int_shapes = tuple(arr.shape for arr in data['int'])
@@ -59,6 +60,7 @@ def _compute_cache_key(user_config: Dict[str, Any], data: Dict[str, Any], block_
         run_params.BURN_ITER,
         run_params.SAVE_LIKELIHOODS,
         run_params.NUM_GQ,
+        run_params.CHUNK_SIZE,
         block_arrays.num_blocks,
         block_arrays.max_size,
         int_shapes,
@@ -148,11 +150,13 @@ def _run_mcmc_chunk(carry, data_int, data_float, data_static, block_arrays,
         new_carry, _ = scan_body(c, i)
         return new_carry
 
-    final_carry = jax.lax.fori_loop(0, CHUNK_SIZE, fori_body, carry)
+    # run_params.CHUNK_SIZE is a static argument, so the loop bound is a compile-time literal
+    final_carry = jax.lax.fori_loop(0, run_params.CHUNK_SIZE, fori_body, carry)
     return final_carry, None
 
 
-def benchmark_mcmc_sampler(compiled_chunk_fn, initial_carry, benchmark_iters: int) -> Dict[str, float]:
+def benchmark_mcmc_sampler(compiled_chunk_fn, initial_carry, benchmark_iters: int,
+                           chunk_size: int = DEFAULT_CHUNK_SIZE) -> Dict[str, float]:
     """
     Run benchmark iterations on compiled MCMC kernel.
 
@@ -160,13 +164,14 @@ def benchmark_mcmc_sampler(compiled_chunk_fn, initial_carry, benchmark_iters: in
         compiled_chunk_fn: Compiled MCMC chunk function
         initial_carry: Initial MCMC state
         benchmark_iters: Number of iterations to benchmark
+        chunk_size: Iterations per chunk (should match compiled kernel)
 
     Returns:
         Dict with 'avg_time' key containing average time per iteration
     """
     print("\n--- BENCHMARKING ---")
     print(f"Running benchmark ({benchmark_iters} iterations)...", flush=True)
-    num_chunks = (benchmark_iters + CHUNK_SIZE - 1) // CHUNK_SIZE
+    num_chunks = (benchmark_iters + chunk_size - 1) // chunk_size
     start_bench = time.perf_counter()
     current_carry = initial_carry
     for _ in range(num_chunks):
@@ -174,7 +179,7 @@ def benchmark_mcmc_sampler(compiled_chunk_fn, initial_carry, benchmark_iters: in
         jax.block_until_ready(current_carry)
     end_bench = time.perf_counter()
     total_time = end_bench - start_bench
-    avg_time = total_time / (num_chunks * CHUNK_SIZE)
+    avg_time = total_time / (num_chunks * chunk_size)
     print("--- Benchmark Results (per iteration) ---")
     print(f"  Avg: {avg_time:.6f} s")
     return {'avg_time': avg_time}

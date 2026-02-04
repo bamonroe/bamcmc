@@ -32,7 +32,7 @@ from .config import (
 from .compile import (
     compile_mcmc_kernel,
     benchmark_mcmc_sampler,
-    CHUNK_SIZE,
+    DEFAULT_CHUNK_SIZE,
 )
 from .diagnostics import (
     compute_nested_rhat,
@@ -247,6 +247,7 @@ def _run_mcmc_iterations(
     user_config: Dict[str, Any],
     block_specs: list,
     avg_time: Optional[float],
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> Tuple[Any, float]:
     """
     Execute the main MCMC sampling loop.
@@ -258,6 +259,7 @@ def _run_mcmc_iterations(
         user_config: User configuration dict
         block_specs: List of block specifications (for acceptance rate labels)
         avg_time: Estimated time per iteration (for progress estimate)
+        chunk_size: Iterations per chunk (should match compiled kernel)
 
     Returns:
         final_carry: Final carry state after all iterations (arrays still on device)
@@ -278,7 +280,7 @@ def _run_mcmc_iterations(
     # Run iterations in chunks
     start_run_time = time.perf_counter()
     current_carry = initial_carry
-    num_chunks = (total_iterations + CHUNK_SIZE - 1) // CHUNK_SIZE
+    num_chunks = (total_iterations + chunk_size - 1) // chunk_size
 
     for i in range(num_chunks):
         current_carry, _ = compiled_chunk(current_carry)
@@ -604,7 +606,10 @@ def rmcmc_single(
                 print(f"  Cached from: {cached_git.get('branch', '?')}@{cached_git.get('commit', '?')}")
     elif benchmark_iters > 0:
         # Run benchmark and save results
-        bench_results = benchmark_mcmc_sampler(compiled_chunk, initial_carry, benchmark_iters)
+        bench_results = benchmark_mcmc_sampler(
+            compiled_chunk, initial_carry, benchmark_iters,
+            chunk_size=run_params.CHUNK_SIZE
+        )
         avg_time = bench_results['avg_time']
 
         benchmark_mgr.save_benchmark(
@@ -631,6 +636,7 @@ def rmcmc_single(
             user_config=user_config,
             block_specs=block_specs,
             avg_time=avg_time,
+            chunk_size=run_params.CHUNK_SIZE,
         )
 
         # --- 7. COMPUTE R-HAT (on device) ---

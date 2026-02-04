@@ -185,6 +185,12 @@ def configure_mcmc_system(
     user_config['per_temp_proposals'] = per_temp_proposals
     user_config['use_deo'] = use_deo
 
+    # Chunk size configuration (affects compilation time/memory vs runtime overhead)
+    chunk_size = mcmc_config.get('chunk_size', 100)
+    if not (1 <= chunk_size <= 10000):
+        raise ValueError(f"chunk_size must be between 1 and 10000, got {chunk_size}")
+    user_config['chunk_size'] = chunk_size
+
     # Configure JAX precision
     if use_double:
         jax.config.update("jax_enable_x64", True)
@@ -282,6 +288,7 @@ def configure_mcmc_system(
         START_ITERATION=0,  # Set to checkpoint iteration when resuming
         SAVE_LIKELIHOODS=save_likelihoods,
         N_CHAINS_TO_SAVE=n_chains_to_save,
+        CHUNK_SIZE=chunk_size,
         PER_TEMP_PROPOSALS=per_temp_proposals,
         N_TEMPERATURES=n_temperatures,
         USE_DEO=use_deo,

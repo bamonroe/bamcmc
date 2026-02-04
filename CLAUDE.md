@@ -256,6 +256,7 @@ mcmc_config = {
     'thin_iteration': 10,            # Thinning interval (default: 1)
     'benchmark': 100,                # Benchmark iterations (default: 0)
     'save_likelihoods': False,       # Save log-likelihood history (default: False)
+    'chunk_size': 100,               # Iterations per compiled chunk (default: 100)
 
     # Parallel tempering (optional)
     'n_temperatures': 1,             # Number of temperature levels (default: 1 = disabled)
@@ -480,7 +481,7 @@ results = run_benchmark(
 #### mcmc/compile.py
 - `compile_mcmc_kernel()`: AOT compilation with caching
 - `benchmark_mcmc_sampler()`: Time the compiled kernel
-- `CHUNK_SIZE`: Iteration chunk size for compilation
+- `DEFAULT_CHUNK_SIZE`: Default iteration chunk size (actual value from `run_params.CHUNK_SIZE`)
 
 #### mcmc/diagnostics.py
 - `compute_nested_rhat()`: Nested R-hat calculation (JAX/GPU)
@@ -802,7 +803,9 @@ updates that can improve mixing for the discrete indicator.
 ## Performance Considerations
 
 1. **Block size**: Larger blocks = fewer kernel calls but coarser updates
-2. **Chunk size**: `CHUNK_SIZE` in mcmc_compile.py controls iteration batching
+2. **Chunk size**: `chunk_size` in mcmc_config controls iterations per compiled chunk.
+   - Default: 100. Lower values (e.g., 10) reduce compilation time/memory but add ~1-10% runtime overhead
+   - Useful for OOM during compilation or faster iteration during development
 3. **Proposal type**: CHAIN_MEAN often mixes faster but needs good initialization
 4. **Float precision**: USE_DOUBLE=True is slower but more stable
 5. **Compilation**: First run compiles (~3-17s); cached runs are fast (~3s)

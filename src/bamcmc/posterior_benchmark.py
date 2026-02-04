@@ -708,7 +708,10 @@ def run_benchmark(
     )
 
     # Run benchmark
-    bench_results = benchmark_mcmc_sampler(compiled_chunk, initial_carry, benchmark_iterations)
+    bench_results = benchmark_mcmc_sampler(
+        compiled_chunk, initial_carry, benchmark_iterations,
+        chunk_size=run_params.CHUNK_SIZE
+    )
     iteration_time = bench_results['avg_time']
 
     # Compare and optionally update cache
