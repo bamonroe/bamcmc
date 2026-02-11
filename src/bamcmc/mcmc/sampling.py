@@ -94,6 +94,8 @@ def propose_multivariate_block(key, current_block, block_mean, block_cov, couple
         (lambda fn: lambda op: fn((*op, grad_fn, block_mode)))(PROPOSAL_REGISTRY[ptype])
         for ptype in used_proposal_types
     ]
+    assert len(dispatch_table) == len(used_proposal_types), \
+        f"Dispatch table size mismatch: {len(dispatch_table)} vs {len(used_proposal_types)}"
 
     proposal, log_ratio, new_key = jax.lax.switch(
         proposal_type,
