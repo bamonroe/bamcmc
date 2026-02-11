@@ -24,7 +24,12 @@ from .batch_specs import BlockSpec, SamplerType, ProposalType
 # ============================================================================
 
 def beta_bernoulli_pooled_batch_specs(mcmc_config, data):
-    """Single parameter (theta) using MH sampling."""
+    """
+    Block specifications for the pooled Beta-Bernoulli model.
+
+    Returns a single block with one parameter (theta on the logit scale)
+    using Metropolis-Hastings with SELF_MEAN proposal.
+    """
     return [
         BlockSpec(
             size=1,
@@ -72,14 +77,27 @@ def beta_bernoulli_pooled_log_posterior(chain_state, param_indices, data, beta=1
 
 
 def beta_bernoulli_pooled_gq(chain_state, data):
-    """Generated quantities: return theta on the probability scale."""
+    """
+    Generated quantities for the pooled Beta-Bernoulli model.
+
+    Applies the sigmoid transform to convert theta from the unconstrained
+    logit scale back to the (0, 1) probability scale. Returns a length-1 array.
+    """
     theta_raw = chain_state[0]
     theta = jax.nn.sigmoid(theta_raw)
     return jnp.array([theta])
 
 
 def beta_bernoulli_pooled_initial_vector(mcmc_config, data):
-    """Initialize theta_raw near 0 (which maps to theta ≈ 0.5)."""
+    """
+    Initial parameter vector for the pooled Beta-Bernoulli model.
+
+    Generates K = num_superchains initial values for theta_raw ~ N(0, 0.5),
+    mapping to theta ≈ 0.5 via sigmoid. Pads to num_chains rows if K < num_chains
+    (the backend replicates superchain values across subchains).
+
+    Returns a flat array of size num_chains * n_params.
+    """
     num_chains = mcmc_config["num_chains"]
     # Only generate K distinct states for superchains; backend replicates for subchains
     K = mcmc_config.get("num_superchains", num_chains)
@@ -118,7 +136,13 @@ def beta_bernoulli_pooled_analytical_posterior(data):
 # ============================================================================
 
 def normal_normal_pooled_batch_specs(mcmc_config, data):
-    """Single parameter (mu) using MH sampling."""
+    """
+    Block specifications for the pooled Normal-Normal model.
+
+    Returns a single block with one parameter (mu) using Metropolis-Hastings
+    with SELF_MEAN proposal. No transformation needed since mu is already
+    unconstrained.
+    """
     return [
         BlockSpec(
             size=1,
@@ -167,12 +191,25 @@ def normal_normal_pooled_log_posterior(chain_state, param_indices, data, beta=1.
 
 
 def normal_normal_pooled_gq(chain_state, data):
-    """No transformation needed for Normal."""
+    """
+    Generated quantities for the pooled Normal-Normal model.
+
+    Returns mu directly as a length-1 array since it is already on the
+    natural scale (no transformation required).
+    """
     return jnp.array([chain_state[0]])
 
 
 def normal_normal_pooled_initial_vector(mcmc_config, data):
-    """Initialize mu near the prior mean."""
+    """
+    Initial parameter vector for the pooled Normal-Normal model.
+
+    Generates K = num_superchains initial values for mu ~ N(mu_0, tau_0),
+    centered at the prior mean. Pads to num_chains rows if K < num_chains
+    (the backend replicates superchain values across subchains).
+
+    Returns a flat array of size num_chains * n_params.
+    """
     num_chains = mcmc_config["num_chains"]
     mu_0 = data["static"][0]
     tau_0 = data["static"][1]
@@ -361,7 +398,13 @@ def direct_sampler_hierarchical_alpha(key, chain_state, hyper_idx, data):
 
 
 def direct_sampler_hierarchical_beta(key, chain_state, hyper_idx, data):
-    """Direct sampler for beta hyperparameter (similar to alpha)."""
+    """
+    Direct sampler for the beta hyperparameter in the hierarchical model.
+
+    Uses the same simplified Gamma posterior approach as the alpha sampler.
+    Draws beta ~ Gamma(a0 + 2*n_subjects, b0 + 1) and stores the result
+    on the log scale. Clamps the minimum value to 0.1 for stability.
+    """
     n_subjects = data["static"][2]
     a0 = data["static"][0]
     b0 = data["static"][1]
@@ -380,7 +423,13 @@ def direct_sampler_hierarchical_beta(key, chain_state, hyper_idx, data):
 
 
 def beta_bernoulli_hierarchical_direct_dispatch(key, chain_state, param_indices, data):
-    """Dispatch to appropriate hyperparameter sampler."""
+    """
+    Dispatch direct sampler for hierarchical Beta-Bernoulli hyperparameters.
+
+    Uses jax.lax.cond to branch between the alpha sampler (offset == 0) and
+    the beta sampler (offset == 1) based on the parameter index relative to
+    the first hyperparameter position (n_subjects).
+    """
     hyper_idx = param_indices[0]
     n_subjects = data["static"][2]
     offset = hyper_idx - n_subjects
@@ -394,7 +443,13 @@ def beta_bernoulli_hierarchical_direct_dispatch(key, chain_state, param_indices,
 
 
 def beta_bernoulli_hierarchical_gq(chain_state, data):
-    """Generated quantities: all thetas on probability scale + hyperparameters."""
+    """
+    Generated quantities for the hierarchical Beta-Bernoulli model.
+
+    Transforms all subject parameters from logit to probability scale via
+    sigmoid, and hyperparameters from log to natural scale via exp.
+    Returns an array of length n_subjects + 2: [theta_1, ..., theta_K, alpha, beta].
+    """
     n_subjects = data["static"][2]
     
     theta_raws = chain_state[:n_subjects]
@@ -409,7 +464,15 @@ def beta_bernoulli_hierarchical_gq(chain_state, data):
 
 
 def beta_bernoulli_hierarchical_initial_vector(mcmc_config, data):
-    """Initialize all parameters."""
+    """
+    Initial parameter vector for the hierarchical Beta-Bernoulli model.
+
+    Initializes n_subjects theta parameters on the logit scale ~ N(0, 0.5)
+    (mapping to theta ≈ 0.5) and 2 hyperparameters on the log scale ~ N(log(2), 0.2)
+    (mapping to alpha ≈ beta ≈ 2).
+
+    Returns a flat array of size num_chains * (n_subjects + 2).
+    """
     num_chains = mcmc_config["num_chains"]
     n_subjects = data["static"][2]
     
@@ -431,7 +494,13 @@ def beta_bernoulli_hierarchical_initial_vector(mcmc_config, data):
 # ============================================================================
 
 def get_test_num_gq(mcmc_config, data):
-    """Returns number of generated quantities for test models."""
+    """
+    Return the number of generated quantities for a test posterior.
+
+    For the hierarchical model, returns n_subjects + 2 (all thetas + alpha + beta).
+    For pooled models, returns 1 (the single transformed parameter).
+    Dispatches based on the 'posterior_id' key in mcmc_config.
+    """
     posterior_id = mcmc_config.get("posterior_id", "")
     
     if posterior_id == "test_beta_bernoulli_hierarchical":
@@ -442,7 +511,13 @@ def get_test_num_gq(mcmc_config, data):
 
 
 def placeholder_direct_sampler(key, chain_state, param_indices, data):
-    """Placeholder for models that don't use direct sampling."""
+    """
+    No-op direct sampler for models that use only MH sampling.
+
+    Required because the registry interface mandates a 'direct_sampler' entry
+    and JAX traces all code branches. Returns the chain state unchanged and
+    a fresh RNG key.
+    """
     new_key, _ = random.split(key)
     return chain_state, new_key
 
