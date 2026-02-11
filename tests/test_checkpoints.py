@@ -374,3 +374,180 @@ class TestCheckpointMetadata:
 
             # Should not have metadata key or it should be None-ish
             assert 'metadata' not in loaded or loaded.get('metadata') is None
+
+
+# ============================================================================
+# CHECKPOINT HELPER TESTS (moved from test_unit.py)
+# ============================================================================
+
+class TestCheckpointHelpers:
+    """Test checkpoint and batch history utilities."""
+
+    def test_apply_burnin_filters_correctly(self):
+        """Test that apply_burnin removes samples before min_iteration."""
+        from bamcmc.checkpoint_helpers import apply_burnin
+
+        history = np.random.randn(10, 4, 2)
+        iterations = np.array([100, 200, 300, 400, 500, 600, 700, 800, 900, 1000])
+        likelihoods = np.random.randn(10, 4)
+
+        h_filtered, i_filtered, l_filtered = apply_burnin(
+            history, iterations, likelihoods, min_iteration=500
+        )
+
+        assert h_filtered.shape[0] == 6
+        assert i_filtered.shape[0] == 6
+        assert l_filtered.shape[0] == 6
+        assert i_filtered[0] == 500
+        assert i_filtered[-1] == 1000
+
+    def test_apply_burnin_no_likelihoods(self):
+        """Test apply_burnin works when likelihoods is None."""
+        from bamcmc.checkpoint_helpers import apply_burnin
+
+        history = np.random.randn(10, 4, 2)
+        iterations = np.arange(10) * 100
+
+        h_filtered, i_filtered, l_filtered = apply_burnin(
+            history, iterations, likelihoods=None, min_iteration=300
+        )
+
+        assert h_filtered.shape[0] == 7
+        assert l_filtered is None
+
+    def test_apply_burnin_keeps_all_if_min_zero(self):
+        """Test apply_burnin keeps all samples when min_iteration=0."""
+        from bamcmc.checkpoint_helpers import apply_burnin
+
+        history = np.random.randn(10, 4, 2)
+        iterations = np.arange(10) * 100
+
+        h_filtered, i_filtered, _ = apply_burnin(
+            history, iterations, min_iteration=0
+        )
+
+        assert h_filtered.shape[0] == 10
+
+    def test_compute_rhat_from_history_converged(self):
+        """Test compute_rhat_from_history returns ~1.0 for well-mixed chains."""
+        from bamcmc.checkpoint_helpers import compute_rhat_from_history
+
+        np.random.seed(42)
+        K, M = 4, 5
+        n_samples = 200
+        history = np.random.randn(n_samples, K * M, 3)
+
+        rhat = compute_rhat_from_history(history, K=K, M=M)
+
+        assert rhat.shape == (3,)
+        assert np.all(rhat < 1.1)
+
+    def test_compute_rhat_from_history_not_converged(self):
+        """Test compute_rhat_from_history detects non-convergence."""
+        from bamcmc.checkpoint_helpers import compute_rhat_from_history
+
+        np.random.seed(42)
+        K, M = 4, 5
+        n_samples = 100
+        history = np.zeros((n_samples, K * M, 1))
+
+        for k in range(K):
+            for m in range(M):
+                chain_idx = k * M + m
+                history[:, chain_idx, 0] = np.random.randn(n_samples) + k * 10
+
+        rhat = compute_rhat_from_history(history, K=K, M=M)
+
+        assert rhat[0] > 2.0
+
+    def test_compute_rhat_validates_chain_count(self):
+        """Test compute_rhat_from_history raises error on chain mismatch."""
+        from bamcmc.checkpoint_helpers import compute_rhat_from_history
+
+        history = np.random.randn(100, 20, 2)
+
+        with pytest.raises(ValueError):
+            compute_rhat_from_history(history, K=4, M=4)
+
+    def test_combine_batch_histories_concatenates(self):
+        """Test combine_batch_histories combines multiple batches."""
+        from bamcmc.checkpoint_helpers import combine_batch_histories
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            batch0 = {
+                'history': np.random.randn(10, 4, 2),
+                'iterations': np.arange(10) * 10,
+                'likelihoods': np.random.randn(10, 4),
+                'K': 2, 'M': 2,
+                'mcmc_config': {'test': True},
+                'thin_iteration': 10,
+            }
+            path0 = os.path.join(tmpdir, 'batch_000.npz')
+            np.savez_compressed(path0, **batch0)
+
+            batch1 = {
+                'history': np.random.randn(10, 4, 2),
+                'iterations': np.arange(10, 20) * 10,
+                'likelihoods': np.random.randn(10, 4),
+                'K': 2, 'M': 2,
+                'mcmc_config': {'test': True},
+                'thin_iteration': 10,
+            }
+            path1 = os.path.join(tmpdir, 'batch_001.npz')
+            np.savez_compressed(path1, **batch1)
+
+            history, iterations, likelihoods, metadata = combine_batch_histories([path0, path1])
+
+            assert history.shape[0] == 20
+            assert iterations.shape[0] == 20
+            assert likelihoods.shape[0] == 20
+            assert iterations[0] == 0
+            assert iterations[-1] == 190
+            assert metadata['K'] == 2
+            assert metadata['M'] == 2
+
+    def test_save_load_checkpoint_roundtrip(self):
+        """Test save_checkpoint and load_checkpoint preserve data."""
+        states_A = np.random.randn(10, 5).astype(np.float32)
+        keys_A = np.random.randint(0, 2**31, (10, 2), dtype=np.uint32)
+        states_B = np.random.randn(10, 5).astype(np.float32)
+        keys_B = np.random.randint(0, 2**31, (10, 2), dtype=np.uint32)
+        history = np.zeros((100, 20, 10))
+        lik_history = np.zeros((100, 20))
+        temp_history = np.zeros((1,), dtype=np.int32)
+        acceptance_counts = np.array([100, 200, 300], dtype=np.int32)
+        iteration = 500
+
+        carry = (states_A, keys_A, states_B, keys_B,
+                 history, lik_history, temp_history,
+                 acceptance_counts, iteration,
+                 np.array([1.0], dtype=np.float32),
+                 np.zeros(10, dtype=np.int32),
+                 np.zeros(10, dtype=np.int32),
+                 np.zeros(1, dtype=np.int32),
+                 np.zeros(1, dtype=np.int32),
+                 0)
+
+        mcmc_config = {
+            'posterior_id': 'test_model',
+            'num_params': 5,
+            'num_chains_a': 10,
+            'num_chains_b': 10,
+            'num_superchains': 4,
+            'subchains_per_super': 5,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, 'checkpoint.npz')
+
+            save_checkpoint(path, carry, mcmc_config)
+            loaded = load_checkpoint(path)
+
+            assert loaded['iteration'] == 500
+            assert loaded['posterior_id'] == 'test_model'
+            assert loaded['num_params'] == 5
+            assert loaded['num_chains_a'] == 10
+            assert loaded['num_chains_b'] == 10
+            np.testing.assert_array_equal(loaded['states_A'], states_A)
+            np.testing.assert_array_equal(loaded['states_B'], states_B)
+            np.testing.assert_array_equal(loaded['acceptance_counts'], acceptance_counts)

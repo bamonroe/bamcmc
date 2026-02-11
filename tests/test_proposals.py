@@ -28,58 +28,10 @@ from bamcmc.proposals import (
 )
 from bamcmc.settings import SettingSlot, MAX_SETTINGS, SETTING_DEFAULTS
 
-from .conftest import make_settings_array, dummy_grad_fn
-
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-def make_test_covariance(dim, scale=1.0):
-    """Create a positive definite covariance matrix for testing."""
-    # Create a correlation matrix with some off-diagonal elements
-    A = np.random.randn(dim, dim) * 0.3
-    cov = np.eye(dim) * scale + A @ A.T * scale * 0.1
-    return jnp.array(cov)
-
-
-def make_test_operand(dim=2, current=None, mean=None, cov=None, n_coupled=10,
-                      settings=None, key=None, grad_fn=None):
-    """Create a standard operand tuple for testing proposals."""
-    if key is None:
-        key = jax.random.PRNGKey(42)
-    if current is None:
-        current = jnp.zeros(dim)
-    if mean is None:
-        mean = jnp.zeros(dim)
-    if cov is None:
-        cov = jnp.eye(dim)
-    if settings is None:
-        settings = make_settings_array()
-    if grad_fn is None:
-        grad_fn = dummy_grad_fn
-
-    # Create coupled blocks
-    coupled_blocks = jnp.zeros((n_coupled, dim))
-    for i in range(n_coupled):
-        coupled_blocks = coupled_blocks.at[i].set(
-            mean + jax.random.normal(jax.random.PRNGKey(i), (dim,)) * 0.5
-        )
-
-    block_mask = jnp.ones(dim)
-    block_mode = mean  # Use mean as mode for simplicity
-
-    return (key, current, mean, cov, coupled_blocks, block_mask, settings, grad_fn, block_mode)
-
-
-def log_mvn_density(x, mean, cov):
-    """Compute log density of multivariate normal."""
-    dim = x.shape[0]
-    diff = x - mean
-    L = jnp.linalg.cholesky(cov)
-    y = jax.scipy.linalg.solve_triangular(L, diff, lower=True)
-    log_det = 2 * jnp.sum(jnp.log(jnp.diag(L)))
-    return -0.5 * (dim * jnp.log(2 * jnp.pi) + log_det + jnp.sum(y**2))
+from .conftest import (
+    make_settings_array, dummy_grad_fn,
+    make_test_covariance, make_test_operand, log_mvn_density,
+)
 
 
 # ============================================================================
@@ -579,3 +531,335 @@ class TestHastingsRatioSymmetry:
 
         # Also verify each direction independently
         assert jnp.isclose(log_ratio_forward, expected_forward, atol=1e-5)
+
+
+# ============================================================================
+# MIXTURE PROPOSAL TESTS (moved from test_unit.py)
+# ============================================================================
+
+class TestMixtureProposal:
+    """Test the mixture proposal function directly."""
+
+    def _make_coupled_data(self, mean, cov_scale, n_chains=50):
+        """Create coupled_blocks and precomputed stats."""
+        key = jax.random.PRNGKey(999)
+        noise = jax.random.normal(key, (n_chains, len(mean)))
+        coupled_blocks = mean + noise * jnp.sqrt(cov_scale)
+        step_mean = jnp.mean(coupled_blocks, axis=0)
+        step_cov = jnp.cov(coupled_blocks, rowvar=False)
+        step_cov = jnp.atleast_2d(step_cov) + 1e-5 * jnp.eye(len(mean))
+        return coupled_blocks, step_mean, step_cov
+
+    def test_mixture_proposal_runs(self):
+        """Test that mixture_proposal runs without error."""
+        from bamcmc.proposals import mixture_proposal
+
+        key = jax.random.PRNGKey(42)
+        current_block = jnp.array([1.0, 2.0])
+        coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([0.0, 0.0]), 0.1)
+        block_mask = jnp.array([1.0, 1.0])
+        block_mode = step_mean  # Dummy mode for testing
+
+        operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                   make_settings_array(chain_prob=0.5), dummy_grad_fn, block_mode)
+        proposal, log_ratio, new_key = mixture_proposal(operand)
+
+        assert proposal.shape == (2,)
+        assert isinstance(float(log_ratio), float)
+
+    def test_mixture_proposal_chain_prob_zero(self):
+        """Test mixture with chain_prob=0 (should behave like self_mean)."""
+        from bamcmc.proposals import mixture_proposal
+
+        current_block = jnp.array([1.0, 2.0])
+        coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([10.0, 10.0]), 0.1)
+        block_mask = jnp.array([1.0, 1.0])
+        block_mode = step_mean  # Dummy mode for testing
+
+        proposals = []
+        for i in range(100):
+            key = jax.random.PRNGKey(i)
+            operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                       make_settings_array(chain_prob=0.0), dummy_grad_fn, block_mode)
+            prop, _, _ = mixture_proposal(operand)
+            proposals.append(prop)
+
+        proposals = jnp.stack(proposals)
+        mean_proposal = jnp.mean(proposals, axis=0)
+        assert jnp.allclose(mean_proposal, current_block, atol=0.5)
+
+    def test_mixture_proposal_chain_prob_one(self):
+        """Test mixture with chain_prob=1 (should behave like chain_mean)."""
+        from bamcmc.proposals import mixture_proposal
+
+        current_block = jnp.array([1.0, 2.0])
+        coupled_mean = jnp.array([10.0, 10.0])
+        coupled_blocks, step_mean, step_cov = self._make_coupled_data(coupled_mean, 0.1)
+        block_mask = jnp.array([1.0, 1.0])
+        block_mode = step_mean  # Dummy mode for testing
+
+        proposals = []
+        for i in range(100):
+            key = jax.random.PRNGKey(i)
+            operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                       make_settings_array(chain_prob=1.0), dummy_grad_fn, block_mode)
+            prop, _, _ = mixture_proposal(operand)
+            proposals.append(prop)
+
+        proposals = jnp.stack(proposals)
+        mean_proposal = jnp.mean(proposals, axis=0)
+        assert jnp.allclose(mean_proposal, coupled_mean, atol=0.5)
+
+    def test_mixture_hastings_ratio_is_finite(self):
+        """Test that Hastings ratio is finite and reasonable."""
+        from bamcmc.proposals import mixture_proposal
+
+        key = jax.random.PRNGKey(42)
+        current_block = jnp.array([5.0, 5.0])
+        coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([5.0, 5.0]), 0.1)
+        block_mask = jnp.array([1.0, 1.0])
+        block_mode = step_mean  # Dummy mode for testing
+
+        operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                   make_settings_array(chain_prob=0.5), dummy_grad_fn, block_mode)
+        _, log_ratio, _ = mixture_proposal(operand)
+
+        assert jnp.isfinite(log_ratio)
+        assert abs(float(log_ratio)) < 100
+
+
+# ============================================================================
+# MULTINOMIAL PROPOSAL TESTS (moved from test_unit.py)
+# ============================================================================
+
+class TestMultinomialProposal:
+    """Test the multinomial proposal function for discrete parameters."""
+
+    def _make_dummy_stats(self, block_size):
+        """Create dummy precomputed stats."""
+        step_mean = jnp.zeros(block_size)
+        step_cov = jnp.eye(block_size)
+        return step_mean, step_cov
+
+    def test_multinomial_proposal_runs(self):
+        """Test that multinomial_proposal runs without error."""
+        from bamcmc.proposals import multinomial_proposal
+
+        key = jax.random.PRNGKey(42)
+        current_block = jnp.array([2.0, 3.0])
+        coupled_blocks = jnp.array([
+            [1.0, 2.0], [2.0, 3.0], [3.0, 4.0], [2.0, 2.0], [1.0, 3.0]
+        ])
+        block_mask = jnp.array([1.0, 1.0])
+        step_mean, step_cov = self._make_dummy_stats(2)
+        block_mode = step_mean  # Dummy mode for testing
+
+        operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                   make_settings_array(uniform_weight=0.05, n_categories=10), dummy_grad_fn, block_mode)
+        proposal, log_ratio, new_key = multinomial_proposal(operand)
+
+        assert proposal.shape == (2,)
+        assert jnp.all(proposal >= 1)
+        assert jnp.all(proposal <= 10)
+        assert jnp.isfinite(log_ratio)
+
+    def test_multinomial_proposal_samples_from_distribution(self):
+        """Test that multinomial samples from empirical distribution."""
+        from bamcmc.proposals import multinomial_proposal
+
+        current_block = jnp.array([3.0])
+        coupled_blocks = jnp.array([[2.0]] * 10 + [[1.0]] * 2 + [[3.0]] * 1)
+        block_mask = jnp.array([1.0])
+        step_mean, step_cov = self._make_dummy_stats(1)
+        block_mode = step_mean  # Dummy mode for testing
+
+        proposals = []
+        for i in range(200):
+            key = jax.random.PRNGKey(i)
+            operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                       make_settings_array(uniform_weight=0.01, n_categories=10), dummy_grad_fn, block_mode)
+            prop, _, _ = multinomial_proposal(operand)
+            proposals.append(float(prop[0]))
+
+        count_2 = sum(1 for p in proposals if p == 2.0)
+        count_1 = sum(1 for p in proposals if p == 1.0)
+        assert count_2 > count_1
+
+    def test_multinomial_hastings_ratio(self):
+        """Test that Hastings ratio is computed correctly."""
+        from bamcmc.proposals import multinomial_proposal
+
+        key = jax.random.PRNGKey(42)
+        current_block = jnp.array([2.0])
+        coupled_blocks = jnp.array([[1.0], [2.0], [3.0], [4.0], [5.0]])
+        block_mask = jnp.array([1.0])
+        step_mean, step_cov = self._make_dummy_stats(1)
+        block_mode = step_mean  # Dummy mode for testing
+
+        operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                   make_settings_array(uniform_weight=0.05, n_categories=5), dummy_grad_fn, block_mode)
+        _, log_ratio, _ = multinomial_proposal(operand)
+
+        assert jnp.isfinite(log_ratio)
+        assert abs(float(log_ratio)) < 10
+
+
+# ============================================================================
+# MCOV_WEIGHTED PROPOSAL TESTS (moved from test_unit.py)
+# ============================================================================
+
+class TestMcovWeightedProposal:
+    """Test MCOV_WEIGHTED proposal (Mean-Covariance Weighted)."""
+
+    def _make_coupled_data(self, mean, std=0.1):
+        """Helper to create coupled_blocks, step_mean, step_cov."""
+        n_chains = 10
+        dim = mean.shape[0]
+        coupled_blocks = jnp.zeros((n_chains, dim))
+        for i in range(n_chains):
+            coupled_blocks = coupled_blocks.at[i].set(mean + std * jax.random.normal(jax.random.PRNGKey(i), (dim,)))
+        step_mean = jnp.mean(coupled_blocks, axis=0)
+        step_cov = jnp.eye(dim) * std**2
+        return coupled_blocks, step_mean, step_cov
+
+    def test_mcov_weighted_proposal_runs(self):
+        """Test that mcov_weighted_proposal runs without error."""
+        from bamcmc.proposals import mcov_weighted_proposal
+
+        key = jax.random.PRNGKey(42)
+        current_block = jnp.array([1.0, 2.0])
+        coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([0.0, 0.0]), 0.1)
+        block_mask = jnp.array([1.0, 1.0])
+        block_mode = step_mean
+
+        operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                   make_settings_array(cov_beta=1.0), dummy_grad_fn, block_mode)
+        proposal, log_ratio, new_key = mcov_weighted_proposal(operand)
+
+        assert proposal.shape == (2,)
+        assert isinstance(float(log_ratio), float)
+        assert jnp.isfinite(log_ratio)
+
+    def test_mcov_weighted_beta_zero_similar_to_mean_weighted(self):
+        """Test that beta=0 produces similar behavior to MEAN_WEIGHTED."""
+        from bamcmc.proposals import mcov_weighted_proposal, mean_weighted_proposal
+
+        key = jax.random.PRNGKey(42)
+        current_block = jnp.array([5.0, 5.0])
+        coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([0.0, 0.0]), 1.0)
+        block_mask = jnp.array([1.0, 1.0])
+        block_mode = step_mean
+
+        # With beta=0, MCOV_WEIGHTED should behave similarly to MEAN_WEIGHTED
+        operand_mcov = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                        make_settings_array(cov_beta=0.0), dummy_grad_fn, block_mode)
+        operand_mean = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                        make_settings_array(), dummy_grad_fn, block_mode)
+
+        prop_mcov, ratio_mcov, _ = mcov_weighted_proposal(operand_mcov)
+        prop_mean, ratio_mean, _ = mean_weighted_proposal(operand_mean)
+
+        # Both proposals use the same RNG key, so should be identical when beta=0
+        assert jnp.allclose(prop_mcov, prop_mean, atol=1e-5)
+        assert jnp.allclose(ratio_mcov, ratio_mean, atol=1e-5)
+
+    def test_mcov_weighted_covariance_expands_when_far(self):
+        """Test that covariance effectively expands when far from mean."""
+        from bamcmc.proposals import mcov_weighted_proposal
+
+        coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([0.0, 0.0]), 1.0)
+        block_mask = jnp.array([1.0, 1.0])
+        block_mode = step_mean
+
+        # Current state far from mean
+        current_far = jnp.array([10.0, 10.0])
+        # Current state near mean
+        current_near = jnp.array([0.1, 0.1])
+
+        proposals_far = []
+        proposals_near = []
+
+        for i in range(100):
+            key = jax.random.PRNGKey(i)
+
+            operand_far = (key, current_far, step_mean, step_cov, coupled_blocks, block_mask,
+                           make_settings_array(cov_beta=2.0), dummy_grad_fn, block_mode)
+            prop_far, _, _ = mcov_weighted_proposal(operand_far)
+            proposals_far.append(prop_far)
+
+            operand_near = (key, current_near, step_mean, step_cov, coupled_blocks, block_mask,
+                            make_settings_array(cov_beta=2.0), dummy_grad_fn, block_mode)
+            prop_near, _, _ = mcov_weighted_proposal(operand_near)
+            proposals_near.append(prop_near)
+
+        proposals_far = jnp.stack(proposals_far)
+        proposals_near = jnp.stack(proposals_near)
+
+        # Variance of proposals when far should be larger than when near
+        var_far = jnp.var(proposals_far, axis=0)
+        var_near = jnp.var(proposals_near, axis=0)
+
+        assert jnp.all(var_far > var_near)
+
+    def test_mcov_weighted_mean_pulled_toward_coupled_mean_when_far(self):
+        """Test that proposals are pulled toward coupled mean when far away."""
+        from bamcmc.proposals import mcov_weighted_proposal
+
+        coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([0.0, 0.0]), 0.5)
+        block_mask = jnp.array([1.0, 1.0])
+        block_mode = step_mean
+
+        # Current state far from mean
+        current_far = jnp.array([20.0, 20.0])
+
+        proposals = []
+        for i in range(200):
+            key = jax.random.PRNGKey(i)
+            operand = (key, current_far, step_mean, step_cov, coupled_blocks, block_mask,
+                       make_settings_array(cov_beta=2.0), dummy_grad_fn, block_mode)
+            prop, _, _ = mcov_weighted_proposal(operand)
+            proposals.append(prop)
+
+        proposals = jnp.stack(proposals)
+        mean_proposal = jnp.mean(proposals, axis=0)
+
+        # Mean of proposals should be pulled TOWARD coupled mean (0, 0)
+        assert jnp.all(mean_proposal < current_far)
+        dist_moved = jnp.linalg.norm(mean_proposal - current_far)
+        assert dist_moved > 1.0
+
+    def test_mcov_weighted_hastings_ratio_is_finite(self):
+        """Test that Hastings ratio is finite and reasonable."""
+        from bamcmc.proposals import mcov_weighted_proposal
+
+        key = jax.random.PRNGKey(42)
+        current_block = jnp.array([5.0, 5.0])
+        coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([0.0, 0.0]), 1.0)
+        block_mask = jnp.array([1.0, 1.0])
+        block_mode = step_mean
+
+        operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                   make_settings_array(cov_beta=1.0), dummy_grad_fn, block_mode)
+        _, log_ratio, _ = mcov_weighted_proposal(operand)
+
+        assert jnp.isfinite(log_ratio)
+        assert abs(float(log_ratio)) < 100
+
+    def test_mcov_weighted_respects_mask(self):
+        """Test that proposal respects the block mask."""
+        from bamcmc.proposals import mcov_weighted_proposal
+
+        key = jax.random.PRNGKey(42)
+        current_block = jnp.array([1.0, 2.0, 3.0])
+        coupled_blocks, step_mean, step_cov = self._make_coupled_data(jnp.array([0.0, 0.0, 0.0]), 0.5)
+        # Mask: only first two dimensions active
+        block_mask = jnp.array([1.0, 1.0, 0.0])
+        block_mode = step_mean
+
+        operand = (key, current_block, step_mean, step_cov, coupled_blocks, block_mask,
+                   make_settings_array(cov_beta=1.0), dummy_grad_fn, block_mode)
+        proposal, _, _ = mcov_weighted_proposal(operand)
+
+        # Third dimension should be unchanged
+        assert proposal[2] == current_block[2]
+        assert proposal.shape == (3,)

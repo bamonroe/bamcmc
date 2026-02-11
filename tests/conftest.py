@@ -133,3 +133,51 @@ def dummy_grad_fn(block_values):
     Returns zeros with the same shape as input.
     """
     return jnp.zeros_like(block_values)
+
+
+def make_test_covariance(dim, scale=1.0):
+    """Create a positive definite covariance matrix for testing."""
+    A = np.random.randn(dim, dim) * 0.3
+    cov = np.eye(dim) * scale + A @ A.T * scale * 0.1
+    return jnp.array(cov)
+
+
+def make_test_operand(dim=2, current=None, mean=None, cov=None, n_coupled=10,
+                      settings=None, key=None, grad_fn=None):
+    """Create a standard operand tuple for testing proposals."""
+    import jax
+    if key is None:
+        key = jax.random.PRNGKey(42)
+    if current is None:
+        current = jnp.zeros(dim)
+    if mean is None:
+        mean = jnp.zeros(dim)
+    if cov is None:
+        cov = jnp.eye(dim)
+    if settings is None:
+        settings = make_settings_array()
+    if grad_fn is None:
+        grad_fn = dummy_grad_fn
+
+    # Create coupled blocks
+    coupled_blocks = jnp.zeros((n_coupled, dim))
+    for i in range(n_coupled):
+        coupled_blocks = coupled_blocks.at[i].set(
+            mean + jax.random.normal(jax.random.PRNGKey(i), (dim,)) * 0.5
+        )
+
+    block_mask = jnp.ones(dim)
+    block_mode = mean  # Use mean as mode for simplicity
+
+    return (key, current, mean, cov, coupled_blocks, block_mask, settings, grad_fn, block_mode)
+
+
+def log_mvn_density(x, mean, cov):
+    """Compute log density of multivariate normal."""
+    import jax
+    dim = x.shape[0]
+    diff = x - mean
+    L = jnp.linalg.cholesky(cov)
+    y = jax.scipy.linalg.solve_triangular(L, diff, lower=True)
+    log_det = 2 * jnp.sum(jnp.log(jnp.diag(L)))
+    return -0.5 * (dim * jnp.log(2 * jnp.pi) + log_det + jnp.sum(y**2))
