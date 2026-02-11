@@ -34,19 +34,38 @@ class TestCheckpointCompatibility:
 
     def _make_checkpoint_data(self, n_chains_a=10, n_chains_b=10, n_params=5,
                                iteration=100, posterior_id='test_model'):
-        """Create checkpoint data for testing."""
+        """Create checkpoint data for testing.
+
+        Carry tuple has 15 elements (index process with tempering):
+          0-3: states_A, keys_A, states_B, keys_B
+          4-6: history, lik_history, temp_history
+          7-8: acceptance_counts, iteration
+          9-14: temperature_ladder, temp_A, temp_B, swap_accepts, swap_attempts, swap_parity
+        """
+        num_chains = n_chains_a + n_chains_b
         states_A = np.random.randn(n_chains_a, n_params).astype(np.float32)
         states_B = np.random.randn(n_chains_b, n_params).astype(np.float32)
         keys_A = np.random.randint(0, 2**31, (n_chains_a, 2), dtype=np.uint32)
         keys_B = np.random.randint(0, 2**31, (n_chains_b, 2), dtype=np.uint32)
 
-        num_blocks = 3
-        history = np.zeros((100, n_chains_a + n_chains_b, n_params))
-        lik_history = np.zeros((100, n_chains_a + n_chains_b))
+        history = np.zeros((100, num_chains, n_params))
+        lik_history = np.zeros((100, num_chains))
+        temp_history = np.zeros((1,), dtype=np.int32)  # placeholder (no tempering)
         acceptance_counts = np.array([100, 200, 300], dtype=np.int32)
 
+        # Tempering placeholders (no tempering)
+        temperature_ladder = np.array([1.0], dtype=np.float32)
+        temp_A = np.zeros(n_chains_a, dtype=np.int32)
+        temp_B = np.zeros(n_chains_b, dtype=np.int32)
+        swap_accepts = np.zeros(1, dtype=np.int32)
+        swap_attempts = np.zeros(1, dtype=np.int32)
+        swap_parity = 0
+
         carry = (states_A, keys_A, states_B, keys_B,
-                 history, lik_history, acceptance_counts, iteration)
+                 history, lik_history, temp_history,
+                 acceptance_counts, iteration,
+                 temperature_ladder, temp_A, temp_B,
+                 swap_accepts, swap_attempts, swap_parity)
 
         user_config = {
             'posterior_id': posterior_id,
@@ -180,11 +199,11 @@ class TestCheckpointCompatibility:
                 num_gq=0, num_collect=100, num_blocks=3
             )
 
-            # Verify carry structure (13 elements with tempering state)
-            assert len(initial_carry) == 13
+            # Verify carry structure (15 elements with tempering state)
+            assert len(initial_carry) == 15
             assert initial_carry[0].shape == (10, 5)  # states_A
             assert initial_carry[2].shape == (10, 5)  # states_B
-            # Elements 8-12 are tempering state (temp_ladder, temp_assign_A/B, swap_accepts/attempts)
+            # Elements 9-14 are tempering state (temp_ladder, temp_assign_A/B, swap_accepts/attempts, parity)
 
     def test_missing_checkpoint_raises(self):
         """Test that loading non-existent checkpoint raises FileNotFoundError."""

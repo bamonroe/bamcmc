@@ -35,7 +35,7 @@ def beta_bernoulli_pooled_batch_specs(mcmc_config, data):
     ]
 
 
-def beta_bernoulli_pooled_log_posterior(chain_state, param_indices, data):
+def beta_bernoulli_pooled_log_posterior(chain_state, param_indices, data, beta=1.0):
     """
     Beta-Bernoulli Model (Pooled across all subjects).
     
@@ -64,11 +64,11 @@ def beta_bernoulli_pooled_log_posterior(chain_state, param_indices, data):
     # We need to account for the Jacobian of the sigmoid transform
     log_prior = stats.beta.logpdf(theta, alpha_0, beta_0)
     log_jacobian = jnp.log(theta) + jnp.log(1.0 - theta)  # Jacobian of logit transform
-    
+
     # Likelihood: Product of Bernoulli
     log_lik = jnp.sum(y * jnp.log(theta) + (1 - y) * jnp.log(1 - theta))
-    
-    return log_prior + log_jacobian + log_lik
+
+    return log_prior + log_jacobian + beta * log_lik
 
 
 def beta_bernoulli_pooled_gq(chain_state, data):
@@ -129,7 +129,7 @@ def normal_normal_pooled_batch_specs(mcmc_config, data):
     ]
 
 
-def normal_normal_pooled_log_posterior(chain_state, param_indices, data):
+def normal_normal_pooled_log_posterior(chain_state, param_indices, data, beta=1.0):
     """
     Normal-Normal Model with Known Variance (Pooled).
     
@@ -159,11 +159,11 @@ def normal_normal_pooled_log_posterior(chain_state, param_indices, data):
     
     # Prior
     log_prior = stats.norm.logpdf(mu, loc=mu_0, scale=tau_0)
-    
+
     # Likelihood
     log_lik = jnp.sum(stats.norm.logpdf(y, loc=mu, scale=sigma))
-    
-    return log_prior + log_lik
+
+    return log_prior + beta * log_lik
 
 
 def normal_normal_pooled_gq(chain_state, data):
@@ -258,7 +258,7 @@ def beta_bernoulli_hierarchical_batch_specs(mcmc_config, data):
     return subject_specs + hyper_specs
 
 
-def beta_bernoulli_hierarchical_log_posterior(chain_state, param_indices, data):
+def beta_bernoulli_hierarchical_log_posterior(chain_state, param_indices, data, beta=1.0):
     """
     Hierarchical Beta-Bernoulli Model.
     
@@ -313,8 +313,8 @@ def beta_bernoulli_hierarchical_log_posterior(chain_state, param_indices, data):
                 0.0
             )
         )
-        
-        return log_prior + log_jacobian + log_lik
+
+        return log_prior + log_jacobian + beta * log_lik
     
     else:
         # Hyperparameter update - this won't be called if using direct sampler

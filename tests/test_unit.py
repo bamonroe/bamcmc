@@ -770,11 +770,19 @@ class TestCheckpointHelpers:
         keys_B = np.random.randint(0, 2**31, (10, 2), dtype=np.uint32)
         history = np.zeros((100, 20, 10))
         lik_history = np.zeros((100, 20))
+        temp_history = np.zeros((1,), dtype=np.int32)
         acceptance_counts = np.array([100, 200, 300], dtype=np.int32)
         iteration = 500
 
         carry = (states_A, keys_A, states_B, keys_B,
-                 history, lik_history, acceptance_counts, iteration)
+                 history, lik_history, temp_history,
+                 acceptance_counts, iteration,
+                 np.array([1.0], dtype=np.float32),
+                 np.zeros(10, dtype=np.int32),
+                 np.zeros(10, dtype=np.int32),
+                 np.zeros(1, dtype=np.int32),
+                 np.zeros(1, dtype=np.int32),
+                 0)
 
         mcmc_config = {
             'posterior_id': 'test_model',
@@ -782,7 +790,7 @@ class TestCheckpointHelpers:
             'num_chains_a': 10,
             'num_chains_b': 10,
             'num_superchains': 4,
-            'SUBCHAINS_PER_SUPER': 5,
+            'subchains_per_super': 5,
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1166,12 +1174,13 @@ class TestParallelTempering:
         temp_assignments_B = np.array(carry[11])
 
         # With 8 chains total, 4 temperatures, we have 2 chains per temperature
-        # temp_assignments = [0, 0, 1, 1, 2, 2, 3, 3] - chains grouped by temperature
+        # Interleaved pattern: temp_assignments = [0, 1, 2, 3, 0, 1, 2, 3]
+        # This ensures both A and B groups have all temperatures
         # After split at num_chains_a=4:
-        #   Group A (first 4): [0, 0, 1, 1]
-        #   Group B (last 4): [2, 2, 3, 3]
-        expected_A = np.array([0, 0, 1, 1])
-        expected_B = np.array([2, 2, 3, 3])
+        #   Group A (first 4): [0, 1, 2, 3]
+        #   Group B (last 4): [0, 1, 2, 3]
+        expected_A = np.array([0, 1, 2, 3])
+        expected_B = np.array([0, 1, 2, 3])
 
         np.testing.assert_array_equal(temp_assignments_A, expected_A)
         np.testing.assert_array_equal(temp_assignments_B, expected_B)
@@ -1333,6 +1342,7 @@ class TestParallelTempering:
         keys_B = np.random.randint(0, 2**31, (4, 2), dtype=np.uint32)
         history = np.zeros((100, 8, 10))
         lik_history = np.zeros((100, 8))
+        temp_history = np.zeros((100, 8), dtype=np.int32)
         acceptance_counts = np.array([100, 200, 300], dtype=np.int32)
         iteration = 500
 
@@ -1342,13 +1352,15 @@ class TestParallelTempering:
         temp_assignments_B = np.array([0, 1, 2, 3], dtype=np.int32)
         swap_accepts = np.array([50, 40, 30], dtype=np.int32)
         swap_attempts = np.array([100, 100, 100], dtype=np.int32)
+        swap_parity = 0
 
-        # Extended 13-element carry tuple
+        # 15-element carry tuple
         carry = (
             states_A, keys_A, states_B, keys_B,
-            history, lik_history, acceptance_counts, iteration,
+            history, lik_history, temp_history,
+            acceptance_counts, iteration,
             temperature_ladder, temp_assignments_A, temp_assignments_B,
-            swap_accepts, swap_attempts
+            swap_accepts, swap_attempts, swap_parity
         )
 
         mcmc_config = {
@@ -1357,7 +1369,7 @@ class TestParallelTempering:
             'num_chains_a': 4,
             'num_chains_b': 4,
             'num_superchains': 4,
-            'SUBCHAINS_PER_SUPER': 2,
+            'subchains_per_super': 2,
             'n_temperatures': 4,
             'beta_min': 0.1,
             'swap_every': 1,
