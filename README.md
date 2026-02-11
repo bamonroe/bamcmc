@@ -7,7 +7,7 @@ Bayesian MCMC sampling package with coupled A/B chains and nested R-hat diagnost
 - **Coupled A/B Sampling**: Chains split into two groups where each group's proposal distribution is informed by the other group's current state
 - **Nested R-hat Diagnostics**: Supports superchain/subchain structure for improved convergence diagnostics (Margossian et al., 2022)
 - **GPU Acceleration**: Built on JAX for efficient GPU-based sampling
-- **Flexible Proposal System**: 11 proposal types for different sampling scenarios
+- **Flexible Proposal System**: 13 proposal types for different sampling scenarios
 - **COUPLED_TRANSFORM Sampler**: Theta-preserving updates for Non-Centered Parameterization (NCP) in hierarchical models
 - **Registry Pattern**: Easy registration of custom posterior models
 - **Multi-run Sampling**: Automatic checkpoint management with reset/resume schedules
@@ -28,6 +28,8 @@ Bayesian MCMC sampling package with coupled A/B chains and nested R-hat diagnost
 | `MCOV_WEIGHTED` | Mean-covariance weighted with configurable blend |
 | `MCOV_WEIGHTED_VEC` | Vectorized per-parameter distance and interpolation |
 | `MCOV_SMOOTH` | Smooth three-zone transition: chain_mean at equilibrium, tracking when far |
+| `MCOV_MODE` | Mode-targeting with scalar Mahalanobis distance scaling |
+| `MCOV_MODE_VEC` | Mode-targeting with per-parameter distance and interpolation |
 
 ## Sampler Types
 
@@ -83,7 +85,7 @@ diagnostics = results['diagnostics']
 
 ## Documentation
 
-See `CLAUDE.md` for detailed package documentation including:
+See [docs/README.md](docs/README.md) for detailed package documentation including:
 - Core concepts (BlockSpec, proposals, coupled chains)
 - Data format requirements
 - Adding new proposals and posteriors
