@@ -2,252 +2,37 @@
 Persistent posterior-specific benchmarking system.
 
 This module provides:
-1. Hashing of posterior systems (code + data) for consistent identification
-2. Persistent storage of benchmark results per posterior configuration
-3. Loading cached benchmarks to avoid re-running
-4. Hardware fingerprinting for reproducibility tracking
+1. Persistent storage of benchmark results per posterior configuration
+2. Loading cached benchmarks to avoid re-running
+3. Comparison of new benchmarks against cached baselines
 
-The key insight is that the same posterior+data should always produce the same
-hash, allowing benchmarks to be cached and reused across sessions.
+Hashing functions live in posterior_hash.py, hardware fingerprinting
+in hardware_info.py. This module re-exports the key functions from
+those modules for backwards compatibility.
 """
 
-import hashlib
-import inspect
 import json
 import os
-import subprocess
-import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional
 
 import jax
-import jax.numpy as jnp
-import numpy as np
 
+# Re-export hashing functions (used by single_run.py and __init__.py)
+from .posterior_hash import (
+    get_function_source_hash,
+    get_data_hash,
+    get_posterior_hash,
+    compute_posterior_hash,
+)
 
-def get_function_source_hash(func) -> str:
-    """
-    Get a hash of a function's source code.
-
-    This captures the actual implementation, so code changes will produce
-    different hashes even if the function signature is the same.
-    """
-    if func is None:
-        return "none"
-
-    try:
-        source = inspect.getsource(func)
-        return hashlib.sha256(source.encode()).hexdigest()[:16]
-    except (TypeError, OSError):
-        # Can't get source (built-in, C extension, lambda, etc.)
-        # Fall back to a representation-based hash
-        return hashlib.sha256(repr(func).encode()).hexdigest()[:16]
-
-
-def get_data_hash(data: Dict) -> str:
-    """
-    Get a hash of the data structure.
-
-    Hashes both shapes and content for exact reproducibility.
-    The same data will always produce the same hash.
-    """
-    hasher = hashlib.sha256()
-
-    # Hash static values
-    if 'static' in data:
-        static_vals = data['static']
-        if isinstance(static_vals, (list, tuple)):
-            hasher.update(f"static:{tuple(static_vals)}".encode())
-        else:
-            hasher.update(f"static:{static_vals}".encode())
-
-    # Hash int arrays (shapes and content)
-    if 'int' in data:
-        for i, arr in enumerate(data['int']):
-            arr_np = np.asarray(arr)
-            hasher.update(f"int_{i}_shape:{arr_np.shape}_dtype:{arr_np.dtype}".encode())
-            hasher.update(arr_np.tobytes())
-
-    # Hash float arrays (shapes and content)
-    if 'float' in data:
-        for i, arr in enumerate(data['float']):
-            arr_np = np.asarray(arr)
-            hasher.update(f"float_{i}_shape:{arr_np.shape}_dtype:{arr_np.dtype}".encode())
-            # Round floats to avoid floating point representation noise
-            arr_rounded = np.round(arr_np.astype(np.float64), decimals=10)
-            hasher.update(arr_rounded.tobytes())
-
-    return hasher.hexdigest()[:16]
-
-
-def get_posterior_hash(posterior_id: str, model_config: Dict, data: Dict, num_chains: int = None) -> str:
-    """
-    Compute a unique hash for a posterior configuration.
-
-    Combines:
-    - Posterior ID (name)
-    - Source code of all registered functions
-    - Data structure (shapes and content)
-    - Number of chains (affects benchmark timing)
-
-    The same posterior code + same data + same chains = same hash, guaranteed.
-
-    Args:
-        posterior_id: The registered name of the posterior
-        model_config: The model config dict from the registry
-        data: The data dict with 'static', 'int', 'float' keys
-        num_chains: Number of MCMC chains (included in hash for benchmark accuracy)
-
-    Returns:
-        16-character hex hash that uniquely identifies this configuration
-    """
-    hasher = hashlib.sha256()
-
-    # Posterior identifier
-    hasher.update(f"posterior_id:{posterior_id}".encode())
-
-    # Number of chains (important for benchmark timing)
-    if num_chains is not None:
-        hasher.update(f"num_chains:{num_chains}".encode())
-
-    # Hash each registered function's source code
-    function_keys = [
-        'log_posterior',
-        'direct_sampler',
-        'generated_quantities',
-        'initial_vector',
-        'batch_type',
-        'get_num_gq'
-    ]
-
-    for key in function_keys:
-        func = model_config.get(key)
-        func_hash = get_function_source_hash(func)
-        hasher.update(f"{key}:{func_hash}".encode())
-
-    # Hash data
-    data_hash = get_data_hash(data)
-    hasher.update(f"data:{data_hash}".encode())
-
-    return hasher.hexdigest()[:16]
-
-
-def get_hardware_info() -> Dict[str, Any]:
-    """
-    Collect hardware information for benchmark context.
-
-    This helps identify if benchmarks were run on different hardware,
-    which would make comparisons invalid.
-    """
-    info = {
-        'jax_backend': str(jax.default_backend()),
-        'jax_devices': [str(d) for d in jax.devices()],
-        'jax_version': jax.__version__,
-    }
-
-    # Try to get GPU info via nvidia-smi
-    try:
-        result = subprocess.run(
-            ['nvidia-smi', '--query-gpu=name,memory.total,driver_version', '--format=csv,noheader'],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            parts = result.stdout.strip().split(', ')
-            if len(parts) >= 3:
-                info['gpu_name'] = parts[0]
-                info['gpu_memory'] = parts[1]
-                info['driver_version'] = parts[2]
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-
-    # Try to get CUDA version from nvidia-smi
-    try:
-        result = subprocess.run(
-            ['nvidia-smi', '--query-gpu=driver_version', '--format=csv,noheader'],
-            capture_output=True, text=True, timeout=5
-        )
-        # nvidia-smi also shows CUDA version in full output
-        result2 = subprocess.run(
-            ['nvidia-smi'],
-            capture_output=True, text=True, timeout=5
-        )
-        if result2.returncode == 0:
-            for line in result2.stdout.split('\n'):
-                if 'CUDA Version' in line:
-                    # Extract CUDA version from line like "| NVIDIA-SMI 580.119.02    Driver Version: 580.119.02    CUDA Version: 13.0  |"
-                    parts = line.split('CUDA Version:')
-                    if len(parts) > 1:
-                        cuda_ver = parts[1].strip().split()[0]
-                        info['cuda_version'] = cuda_ver
-                    break
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-
-    return info
-
-
-def get_git_info(repo_path: Optional[Path] = None) -> Dict[str, str]:
-    """
-    Get git repository information for the bamcmc package.
-
-    This helps track which version of the backend code was used.
-    """
-    info = {}
-
-    if repo_path is None:
-        repo_path = Path(__file__).parent
-
-    try:
-        # Get current branch
-        result = subprocess.run(
-            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
-            capture_output=True, text=True, timeout=5,
-            cwd=repo_path
-        )
-        if result.returncode == 0:
-            info['branch'] = result.stdout.strip()
-
-        # Get current commit (short hash)
-        result = subprocess.run(
-            ['git', 'rev-parse', '--short', 'HEAD'],
-            capture_output=True, text=True, timeout=5,
-            cwd=repo_path
-        )
-        if result.returncode == 0:
-            info['commit'] = result.stdout.strip()
-
-        # Get full commit hash
-        result = subprocess.run(
-            ['git', 'rev-parse', 'HEAD'],
-            capture_output=True, text=True, timeout=5,
-            cwd=repo_path
-        )
-        if result.returncode == 0:
-            info['commit_full'] = result.stdout.strip()
-
-        # Check if working directory is clean
-        result = subprocess.run(
-            ['git', 'status', '--porcelain'],
-            capture_output=True, text=True, timeout=5,
-            cwd=repo_path
-        )
-        if result.returncode == 0:
-            info['dirty'] = len(result.stdout.strip()) > 0
-
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-
-    return info
-
-
-def get_bamcmc_version() -> str:
-    """Get bamcmc package version."""
-    try:
-        from bamcmc import __version__
-        return __version__
-    except (ImportError, AttributeError):
-        return "unknown"
+# Re-export hardware/version functions (used by PosteriorBenchmarkManager)
+from .hardware_info import (
+    get_hardware_info,
+    get_git_info,
+    get_bamcmc_version,
+)
 
 
 def get_default_benchmark_dir() -> str:

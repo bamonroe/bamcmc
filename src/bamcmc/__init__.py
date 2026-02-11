@@ -91,10 +91,10 @@ from .reset_utils import (
     select_diverse_states,
     init_from_prior,
 )
+from .posterior_hash import compute_posterior_hash
 from .posterior_benchmark import (
     PosteriorBenchmarkManager,
     get_manager as get_benchmark_manager,
-    compute_posterior_hash,
     run_benchmark,
 )
 

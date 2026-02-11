@@ -57,11 +57,9 @@ from ..checkpoint_helpers import (
     get_latest_checkpoint,
 )
 
-# Import posterior benchmarking system
-from ..posterior_benchmark import (
-    get_manager as get_benchmark_manager,
-    get_posterior_hash,
-)
+# Import posterior hashing and benchmarking
+from ..posterior_hash import get_posterior_hash
+from ..posterior_benchmark import get_manager as get_benchmark_manager
 
 # Public API for this module
 __all__ = [
