@@ -23,7 +23,7 @@ from bamcmc.checkpoint_helpers import (
     clean_model_files,
 )
 from bamcmc.mcmc.config import gen_rng_keys
-from bamcmc.mcmc.backend import _validate_checkpoint_compatibility
+from bamcmc.mcmc.single_run import _validate_checkpoint_compatibility
 from bamcmc.mcmc.types import build_block_arrays
 from bamcmc.batch_specs import BlockSpec, SamplerType, ProposalType
 

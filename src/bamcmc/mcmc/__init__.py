@@ -2,7 +2,8 @@
 MCMC Subpackage - Core MCMC sampling implementation.
 
 This package contains the core MCMC sampling logic:
-- backend: Main entry points (rmcmc, rmcmc_single)
+- backend: Multi-run orchestrator (rmcmc)
+- single_run: Single-run engine (rmcmc_single) and helpers
 - compile: Kernel compilation and caching
 - config: Configuration and initialization
 - diagnostics: Convergence diagnostics (R-hat)
@@ -16,7 +17,8 @@ This package contains the core MCMC sampling logic:
 from .types import BlockArrays, RunParams, build_block_arrays
 
 # Import main entry points
-from .backend import rmcmc, rmcmc_single
+from .backend import rmcmc
+from .single_run import rmcmc_single
 
 # Import commonly used functions
 from .config import (
