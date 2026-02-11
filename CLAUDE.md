@@ -193,97 +193,33 @@ This section documents known issues and potential improvements identified during
 - Checks posterior ID matches
 - Provides clear error messages when checkpoint is incompatible
 
-### Medium Priority
+### Medium Priority (All Fixed)
 
-#### 4. Undocumented Magic Numbers (diagnostics.py)
+#### 4. ~~Undocumented Magic Numbers~~ (FIXED)
 
-**Issue**: The nested R-hat threshold uses an undocumented constant.
+**Status**: Fixed. Named the constant `TAU_NESTED_RHAT` with documentation comments in `src/bamcmc/mcmc/diagnostics.py`.
 
-**Location**: `src/bamcmc/mcmc/diagnostics.py:142`
+#### 5. ~~Missing TypedDict for Data Structure~~ (FIXED)
 
-**Current Code**:
-```python
-tau = 1e-4
-threshold = np.sqrt(1 + 1/M + tau)
-```
+**Status**: Fixed. Added `MCMCData` TypedDict in `src/bamcmc/mcmc/types.py`, exported from `src/bamcmc/__init__.py`.
 
-**Suggested Fix**: Document the source:
-```python
-# tau: small regularization constant for nested R-hat threshold
-# from Margossian et al. (2022), prevents division instability when M is large
-TAU_NESTED_RHAT = 1e-4
-threshold = np.sqrt(1 + 1/M + TAU_NESTED_RHAT)
-```
+#### 6. ~~Settings Key Mapping Boilerplate~~ (FIXED)
 
-#### 5. Missing TypedDict for Data Structure
+**Status**: Fixed. Replaced manual `key_to_slot` dict with auto-generated module-level `KEY_TO_SLOT` in `src/bamcmc/settings.py`. Adding a new setting now requires 2 edits instead of 3.
 
-**Issue**: The `data` dict structure is documented but not typed, making it easy to misuse.
+### Lower Priority (All Fixed)
 
-**Suggested Addition** (in `src/bamcmc/mcmc/types.py`):
-```python
-from typing import TypedDict, Tuple
-import numpy as np
+#### 7. ~~Missing Dispatch Table Assertion~~ (FIXED)
 
-class MCMCData(TypedDict):
-    static: Tuple[int, ...]           # Scalars (hashable)
-    int: Tuple[np.ndarray, ...]       # Integer arrays
-    float: Tuple[np.ndarray, ...]     # Float arrays
-```
+**Status**: Fixed. Added assertion after dispatch table construction in `src/bamcmc/mcmc/sampling.py`.
 
-#### 6. Settings Key Mapping Boilerplate (settings.py)
+#### 8. ~~Test Coverage Gaps~~ (FIXED)
 
-**Issue**: Adding a new setting requires edits in 3 places (SettingSlot enum, SETTING_DEFAULTS, key_to_slot dict).
-
-**Suggested Fix**: Auto-generate the mapping:
-```python
-class SettingSlot(IntEnum):
-    COV_MULT = 0
-    ALPHA = 1
-    # ... etc
-
-# Auto-generate from enum names (lowercase)
-KEY_TO_SLOT = {slot.name.lower(): slot.value for slot in SettingSlot}
-```
-
-### Lower Priority
-
-#### 7. Missing Dispatch Table Assertion (sampling.py)
-
-**Issue**: The compact proposal dispatch table is built dynamically but not validated.
-
-**Location**: `src/bamcmc/mcmc/sampling.py:88`
-
-**Suggested Fix**:
-```python
-dispatch_table = [
-    (lambda fn: lambda op: fn((*op, grad_fn, block_mode)))(PROPOSAL_REGISTRY[ptype])
-    for ptype in used_proposal_types
-]
-
-assert len(dispatch_table) == len(used_proposal_types), \
-    f"Dispatch table size mismatch: {len(dispatch_table)} vs {len(used_proposal_types)}"
-```
-
-#### 8. Test Coverage Gaps
-
-**Current Gaps**:
-- No explicit tests for proposal Hastings ratio symmetry
-- No tests for checkpoint resume with mismatched data shapes
-- No tests for edge cases: single chain, empty blocks
-- Direct sampler interface not explicitly tested
-- No performance regression tests
-
-**Suggested Additions**:
-```python
-# tests/test_proposals.py
-def test_hastings_ratio_symmetry():
-    """Verify q(y|x) / q(x|y) computed correctly for each proposal."""
-    # Sample x, y, compute ratio both directions, verify consistency
-
-def test_checkpoint_shape_mismatch():
-    """Verify clear error when checkpoint doesn't match model."""
-    # Create checkpoint with N params, try to load with M != N
-```
+**Status**: Fixed. Added tests for:
+- Hastings ratio symmetry (CHAIN_MEAN) in `tests/test_proposals.py`
+- Checkpoint num_params mismatch in `tests/test_checkpoints.py`
+- Single chain initialization in `tests/test_unit.py`
+- Empty block spec list in `tests/test_unit.py`
 
 ### Strengths (Don't Change)
 
@@ -304,8 +240,8 @@ The following patterns are well-implemented and should be preserved:
 | ~~High~~ | ~~Emoji in diagnostics~~ | error_handling.py, backend.py | **FIXED** |
 | ~~High~~ | ~~Silent unknown settings~~ | settings.py | **Already implemented** |
 | ~~High~~ | ~~Checkpoint compatibility~~ | backend.py | **FIXED** |
-| Medium | Magic number docs | diagnostics.py | Open |
-| Medium | TypedDict for data | types.py | Open |
-| Medium | Settings auto-mapping | settings.py | Open |
-| Low | Dispatch assertion | sampling.py | Open |
-| Low | Test coverage | tests/ | Open |
+| ~~Medium~~ | ~~Magic number docs~~ | diagnostics.py | **FIXED** |
+| ~~Medium~~ | ~~TypedDict for data~~ | types.py | **FIXED** |
+| ~~Medium~~ | ~~Settings auto-mapping~~ | settings.py | **FIXED** |
+| ~~Low~~ | ~~Dispatch assertion~~ | sampling.py | **FIXED** |
+| ~~Low~~ | ~~Test coverage~~ | tests/ | **FIXED** |
