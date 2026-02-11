@@ -55,6 +55,9 @@ SETTING_DEFAULTS = {
 # Total number of settings (determines matrix width)
 MAX_SETTINGS = len(SettingSlot)
 
+# Auto-generated from enum names (lowercase)
+KEY_TO_SLOT = {slot.name.lower(): slot.value for slot in SettingSlot}
+
 
 def build_settings_matrix(specs):
     """
@@ -73,28 +76,17 @@ def build_settings_matrix(specs):
     for slot, default in SETTING_DEFAULTS.items():
         matrix[:, slot] = default
 
-    # Map string keys to slots
-    key_to_slot = {
-        'chain_prob': SettingSlot.CHAIN_PROB,
-        'n_categories': SettingSlot.N_CATEGORIES,
-        'cov_mult': SettingSlot.COV_MULT,
-        'uniform_weight': SettingSlot.UNIFORM_WEIGHT,
-        'cov_beta': SettingSlot.COV_BETA,
-        'k_g': SettingSlot.K_G,
-        'k_alpha': SettingSlot.K_ALPHA,
-    }
-
     # Fill in specified values
     for i, spec in enumerate(specs):
         if spec.settings:
             for key, value in spec.settings.items():
-                if key in key_to_slot:
-                    matrix[i, key_to_slot[key]] = float(value)
+                if key in KEY_TO_SLOT:
+                    matrix[i, KEY_TO_SLOT[key]] = float(value)
                 else:
                     block_label = spec.label if hasattr(spec, 'label') and spec.label else f"block {i}"
                     warnings.warn(
                         f"Unknown setting '{key}' in {block_label}. "
-                        f"Valid settings: {list(key_to_slot.keys())}",
+                        f"Valid settings: {list(KEY_TO_SLOT.keys())}",
                         UserWarning,
                         stacklevel=2
                     )
