@@ -11,10 +11,18 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
+from typing import TypedDict
 
 from ..batch_specs import BlockSpec, MAX_PROPOSAL_GROUPS
 from ..settings import build_settings_matrix, MAX_SETTINGS, SETTING_DEFAULTS, SettingSlot
+
+
+class MCMCData(TypedDict):
+    """Type definition for MCMC data dict. See docs/configuration.md for constraints."""
+    static: Tuple[int, ...]
+    int: Tuple[np.ndarray, ...]
+    float: Tuple[np.ndarray, ...]
 
 
 @dataclass(frozen=True)

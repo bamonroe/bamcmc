@@ -65,6 +65,7 @@ from .batch_specs import (
     MAX_PROPOSAL_GROUPS,
 )
 from .settings import SettingSlot
+from .mcmc.types import MCMCData
 from .checkpoint_helpers import (
     save_checkpoint,
     load_checkpoint,
