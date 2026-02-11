@@ -149,8 +149,10 @@ def compute_and_print_rhat(
     continuous_rhat = nrhat_values[continuous_mask]
 
     # Display results for continuous params only
-    tau = 1e-4
-    threshold = np.sqrt(1 + 1/M + tau)
+    # Small regularization constant for nested R-hat threshold
+    # From Margossian et al. (2022), prevents division instability when M is large
+    TAU_NESTED_RHAT = 1e-4
+    threshold = np.sqrt(1 + 1/M + TAU_NESTED_RHAT)
 
     if M > 1:
         label = f"Nested R̂ ({K}x{M})"
@@ -163,7 +165,7 @@ def compute_and_print_rhat(
     print(f"\n--- {label} Results ({n_continuous} continuous params, {n_discrete} discrete excluded) ---")
     print(f"  Max: {np.nanmax(continuous_rhat):.4f}")
     print(f"  Median: {np.nanmedian(continuous_rhat):.4f}")
-    print(f"  Threshold: {threshold:.4f} (tau={tau:.0e})")
+    print(f"  Threshold: {threshold:.4f} (tau={TAU_NESTED_RHAT:.0e})")
 
     # Check for NaN/Inf (stuck continuous params)
     n_nan = np.sum(~np.isfinite(continuous_rhat))
