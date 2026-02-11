@@ -1,8 +1,29 @@
 """
 Random Walk Proposal for MCMC Sampling
 
-Simple random walk proposal with identity covariance matrix.
-Does NOT use coupled chain statistics - completely independent proposal.
+Simple isotropic random walk proposal using identity covariance.
+Does NOT use any coupled chain statistics — the proposal covariance
+is always I, regardless of the empirical distribution.
+
+Proposal: x' ~ N(x_current, cov_mult * I)
+where:
+    - I is the identity matrix
+    - cov_mult controls step size (SettingSlot.COV_MULT, default 1.0)
+
+Hastings ratio: 0 (symmetric proposal, q(x'|x) = q(x|x'))
+
+Unlike SELF_MEAN (which uses the coupled-chain covariance Σ), this
+proposal ignores all inter-chain information. This makes it useful as:
+    - A baseline for comparing adaptive proposal performance
+    - A fallback during early burn-in when chain statistics are unreliable
+    - A simple option for low-dimensional, isotropic targets
+
+For most problems, SELF_MEAN or MIXTURE will mix faster because they
+adapt to the target geometry via the coupled-chain covariance.
+
+Settings used:
+    COV_MULT - Isotropic variance multiplier (default 1.0).
+               Step size in each dimension is sqrt(cov_mult).
 """
 
 import jax.numpy as jnp

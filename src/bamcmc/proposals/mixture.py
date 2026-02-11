@@ -1,7 +1,27 @@
 """
 Mixture Proposal for MCMC Sampling
 
-Combines chain_mean and self_mean proposals with configurable mixing weight.
+Combines the chain_mean (independent) and self_mean (random walk) proposals
+into a single proposal using a configurable mixing weight.
+
+Proposal:
+    q(x'|x) = p * N(x'|μ_pop, Σ) + (1-p) * N(x'|x, cov_mult * Σ)
+where:
+    - p = chain_prob (mixing weight, SettingSlot.CHAIN_PROB)
+    - μ_pop and Σ are from coupled chains
+    - cov_mult scales the self_mean component (SettingSlot.COV_MULT)
+
+Hastings ratio: log q(x|x') - log q(x'|x), computed via logaddexp
+to maintain numerical stability across the two mixture components.
+
+The mixture inherits the strengths of both components: the self_mean
+component ensures reasonable acceptance rates even when far from the
+mean, while the chain_mean component enables large jumps toward the
+population center. Typical chain_prob values are 0.3–0.7.
+
+Settings used:
+    CHAIN_PROB - Probability of using chain_mean component (default 0.5)
+    COV_MULT   - Variance multiplier for self_mean component (default 1.0)
 """
 
 import jax

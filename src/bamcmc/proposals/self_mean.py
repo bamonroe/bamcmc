@@ -1,8 +1,24 @@
 """
 Self-Mean Proposal for MCMC Sampling
 
-Symmetric proposal centered on current state.
-Also known as "random walk" proposal.
+Symmetric random-walk proposal centered on the current state, using the
+empirical covariance from coupled chains as the proposal covariance.
+
+Proposal: x' ~ N(x_current, cov_mult * Σ)
+where:
+    - Σ is the empirical covariance from coupled chains (step_cov)
+    - cov_mult scales the proposal variance (SettingSlot.COV_MULT, default 1.0)
+
+Hastings ratio: 0 (symmetric proposal, q(x'|x) = q(x|x'))
+
+Unlike RAND_WALK, this proposal adapts to the local geometry via the
+coupled-chain covariance. Unlike CHAIN_MEAN, it centers on the current
+state rather than the population mean, making it conservative but robust.
+
+Settings used:
+    COV_MULT - Proposal variance multiplier (default 1.0).
+               Values < 1 give smaller steps (higher acceptance, slower mixing).
+               Values > 1 give larger steps (lower acceptance, faster exploration).
 """
 
 import jax.numpy as jnp

@@ -1,7 +1,28 @@
 """
 Multinomial Proposal for MCMC Sampling
 
-Discrete proposal for categorical parameters on a grid.
+Discrete proposal for categorical parameters on an integer grid [1, n_categories].
+Proposes new values by sampling from a mixture of empirical and uniform distributions,
+computed independently for each dimension in the block.
+
+Proposal distribution per dimension:
+    q(x'_d) = w * Uniform(1, K) + (1-w) * Empirical_d
+where:
+    - w = uniform_weight (SettingSlot.UNIFORM_WEIGHT)
+    - K = n_categories (SettingSlot.N_CATEGORIES)
+    - Empirical_d = frequency distribution of dimension d across coupled chains
+
+Hastings ratio: Σ_d mask_d * [log q(x_d) - log q(x'_d)]
+(product of per-dimension ratios, only over active dimensions).
+
+Uses a fixed MAX_CATEGORIES=10 for all array allocations to avoid JAX
+recompilation when n_categories changes. Invalid categories beyond
+n_categories are masked to zero probability.
+
+Settings used:
+    N_CATEGORIES   - Number of valid categories, values in [1, K] (required)
+    UNIFORM_WEIGHT - Weight of uniform component in mixture (default 0.4).
+                     Higher values increase exploration of rare categories.
 """
 
 import jax

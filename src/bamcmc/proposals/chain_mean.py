@@ -1,8 +1,24 @@
 """
 Chain-Mean Proposal for MCMC Sampling
 
-Asymmetric proposal centered on population mean.
-Also known as "independent" proposal.
+Asymmetric (independent) proposal centered on the coupled-chain population
+mean, using the empirical covariance from coupled chains.
+
+Proposal: x' ~ N(μ_pop, Σ)
+where:
+    - μ_pop is the mean of the coupled chains (step_mean)
+    - Σ is the empirical covariance from coupled chains (step_cov)
+
+Hastings ratio: log q(x|μ,Σ) - log q(x'|μ,Σ) = 0.5 * (d(x')² - d(x)²)
+where d(x)² = (x - μ)ᵀ Σ⁻¹ (x - μ) is the Mahalanobis distance.
+
+This is an independent proposal — the proposal distribution does not depend
+on the current state x, only on the coupled-chain statistics. It works well
+when chains are well-mixed (population mean is representative) but can have
+low acceptance rates when chains are far from the mean.
+
+Best suited for low-dimensional blocks or as a component in MIXTURE proposals.
+No additional settings are used; the covariance is not scaled by COV_MULT.
 """
 
 import jax
