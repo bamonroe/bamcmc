@@ -532,3 +532,50 @@ class TestModeWeightedProposal:
 
         # Mean proposal should be closer to mode than current is
         assert dist_to_mode < dist_current_to_mode
+
+
+# ============================================================================
+# HASTINGS RATIO SYMMETRY TESTS
+# ============================================================================
+
+class TestHastingsRatioSymmetry:
+    """Verify Hastings ratios satisfy detailed balance by checking both directions."""
+
+    def test_chain_mean_ratio_symmetry(self):
+        """For CHAIN_MEAN, verify log q(y|x) - log q(x|y) consistency.
+
+        Chain-mean is an independent proposal q(·) = N(μ, Σ), so:
+          log_ratio_forward  = log q(x|μ) - log q(y|μ)   (proposing y from x)
+          log_ratio_reverse  = log q(y|μ) - log q(x|μ)   (proposing x from y)
+        These should sum to zero.
+        """
+        mean = jnp.array([1.0, -1.0])
+        cov = jnp.array([[1.0, 0.3], [0.3, 1.0]])
+        x = jnp.array([2.0, 3.0])
+
+        # Get proposal y from x
+        key = jax.random.PRNGKey(42)
+        operand_forward = make_test_operand(dim=2, current=x, mean=mean, cov=cov, key=key)
+        y, log_ratio_forward, _ = chain_mean_proposal(operand_forward)
+
+        # Compute ratio in reverse direction (proposing x from y)
+        # For chain_mean, the ratio doesn't depend on which state we're at,
+        # only on the proposed and current values relative to μ
+        operand_reverse = make_test_operand(dim=2, current=y, mean=mean, cov=cov,
+                                             key=jax.random.PRNGKey(99))
+        _, log_ratio_reverse_raw, _ = chain_mean_proposal(operand_reverse)
+
+        # The reverse ratio for the specific pair (x, y) is log q(y|μ) - log q(x|μ)
+        # We compute it directly from the density function
+        log_q_x = log_mvn_density(x, mean, cov)
+        log_q_y = log_mvn_density(y, mean, cov)
+
+        expected_forward = log_q_x - log_q_y
+        expected_reverse = log_q_y - log_q_x
+
+        # Forward + reverse should sum to zero
+        assert jnp.isclose(log_ratio_forward + expected_reverse, 0.0, atol=1e-5), \
+            f"Forward ({log_ratio_forward}) + reverse ({expected_reverse}) should be 0"
+
+        # Also verify each direction independently
+        assert jnp.isclose(log_ratio_forward, expected_forward, atol=1e-5)

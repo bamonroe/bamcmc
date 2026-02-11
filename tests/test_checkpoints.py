@@ -23,6 +23,9 @@ from bamcmc.checkpoint_helpers import (
     clean_model_files,
 )
 from bamcmc.mcmc.config import gen_rng_keys
+from bamcmc.mcmc.backend import _validate_checkpoint_compatibility
+from bamcmc.mcmc.types import build_block_arrays
+from bamcmc.batch_specs import BlockSpec, SamplerType, ProposalType
 
 
 # ============================================================================
@@ -209,6 +212,25 @@ class TestCheckpointCompatibility:
         """Test that loading non-existent checkpoint raises FileNotFoundError."""
         with pytest.raises(FileNotFoundError):
             load_checkpoint('/nonexistent/path/checkpoint.npz')
+
+    def test_num_params_mismatch_raises(self):
+        """Test that mismatched parameter counts raise ValueError."""
+        carry, user_config = self._make_checkpoint_data(n_params=5)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, 'checkpoint.npz')
+            save_checkpoint(path, carry, user_config)
+            checkpoint = load_checkpoint(path)
+
+            # Build block_arrays expecting 10 params (two blocks of 5)
+            specs = [
+                BlockSpec(5, SamplerType.METROPOLIS_HASTINGS, ProposalType.SELF_MEAN),
+                BlockSpec(5, SamplerType.METROPOLIS_HASTINGS, ProposalType.SELF_MEAN),
+            ]
+            block_arrays = build_block_arrays(specs)
+
+            with pytest.raises(ValueError, match="parameter count mismatch"):
+                _validate_checkpoint_compatibility(checkpoint, block_arrays, user_config)
 
 
 # ============================================================================

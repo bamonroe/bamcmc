@@ -889,6 +889,39 @@ class TestEdgeCases:
         rhat = compute_nested_rhat(jnp.array(history), K=K, M=M)
         assert rhat.shape == (2,)
 
+    def test_single_chain_initialization(self):
+        """Test that num_chains=1 initializes correctly."""
+        user_config = {
+            'num_chains': 2,
+            'num_chains_a': 1,
+            'num_chains_b': 1,
+            'num_superchains': 2,
+            'save_likelihoods': False,
+        }
+        master_key, init_key = gen_rng_keys(42)
+        runtime_ctx = {
+            'jnp_float_dtype': jnp.float32,
+            'init_key': init_key,
+            'master_key': master_key,
+        }
+
+        init_vec = np.array([10, 20], dtype=np.float32)
+
+        carry, new_config = initialize_mcmc_system(
+            init_vec, user_config, runtime_ctx, num_gq=0, num_collect=10, num_blocks=1
+        )
+
+        states_A = carry[0]
+        states_B = carry[2]
+
+        assert states_A.shape[0] == 1
+        assert states_B.shape[0] == 1
+
+    def test_empty_block_spec_list(self):
+        """Test that empty block specs raises ValueError."""
+        with pytest.raises(ValueError, match="Empty block specifications"):
+            build_block_arrays([], start_idx=0)
+
     def test_validation_rejects_negative_chains(self):
         """Test that validation catches invalid chain counts."""
         config = {
