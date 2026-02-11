@@ -4,13 +4,20 @@
 
 ## Quick Links
 
+### API Reference
 - [Sampler Types](./samplers.md) - METROPOLIS_HASTINGS, DIRECT_CONJUGATE, COUPLED_TRANSFORM
 - [Proposal Types](./proposals.md) - 13 proposal distributions for different scenarios
 - [BlockSpec Reference](./block_spec.md) - How to specify parameter blocks
 - [Log-Posterior Functions](./log_posterior.md) - Requirements for posterior functions
 - [Registering Models](./registration.md) - How to register posteriors with the system
 - [Settings Reference](./settings.md) - Available proposal settings
-- [Checkpoint Helpers](./checkpoint_helpers.md) - Post-processing and memory-efficient analysis
+- [Checkpoint Helpers](./checkpoint_helpers.md) - Checkpoints, output management, and post-processing
+
+### Guides
+- [Configuration](./configuration.md) - Data format, MCMC config keys, parallel tempering
+- [Architecture](./architecture.md) - Coupled chains, data structures, module responsibilities
+- [Development](./development.md) - Adding proposals, defining posteriors, minimal template, testing
+- [Troubleshooting](./troubleshooting.md) - Common errors, debugging, performance, JAX patterns
 
 ## Package Overview
 
