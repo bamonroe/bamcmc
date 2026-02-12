@@ -99,8 +99,16 @@ data = {
     "float": (float_array,),
 }
 
-# 5. Run MCMC
-results, checkpoint = rmcmc_single(mcmc_config, data)
+# 5. Run MCMC (multi-run with automatic checkpointing)
+# Each run saves a checkpoint, so subsequent runs resume from the last
+# iteration. This keeps per-run memory bounded regardless of total
+# sampling length.
+summary = rmcmc(
+    mcmc_config,
+    data,
+    output_dir='./output',
+    run_schedule=[("resume", 5)],  # 5 resume runs
+)
 ```
 
 ## Architecture
@@ -148,9 +156,28 @@ The `static` tuple should contain only hashable values (int, float, tuple) since
 
 ## Key Functions
 
+### rmcmc()
+
+Multi-run sampling with automatic checkpointing (recommended). Each run resumes from the previous checkpoint, keeping per-run memory bounded regardless of total sampling length:
+
+```python
+summary = rmcmc(
+    mcmc_config,
+    data,
+    output_dir='./output',
+    run_schedule=[("resume", 5)],  # 5 resume runs
+    calculate_rhat=True,
+)
+
+# Summary contains:
+# - history_files: list of (run_index, path) for saved histories
+# - latest_checkpoint: path to most recent checkpoint
+# - total_runs_completed: number of runs completed
+```
+
 ### rmcmc_single()
 
-Run a single MCMC sampling session:
+Single MCMC run for custom workflows or testing:
 
 ```python
 results, checkpoint = rmcmc_single(
@@ -165,20 +192,6 @@ results, checkpoint = rmcmc_single(
 # - diagnostics: {'rhat': array, 'compile_time': float, ...}
 # - K: Number of superchains
 # - M: Subchains per superchain
-```
-
-### rmcmc()
-
-Run multiple MCMC sessions with automatic checkpointing:
-
-```python
-summary = rmcmc(
-    mcmc_config,
-    data,
-    output_dir='./output',
-    run_schedule=[("resume", 5)],  # 5 resume runs
-    calculate_rhat=True,
-)
 ```
 
 ## Configuration Reference
