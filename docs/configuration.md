@@ -96,8 +96,6 @@ mcmc_config = {
 
 Parallel tempering runs chains at different "temperatures" to improve exploration of multimodal posteriors. Higher temperatures flatten the posterior, making it easier for chains to cross barriers between modes.
 
-### Configuration
-
 ```python
 mcmc_config = {
     # ... other config ...
@@ -106,24 +104,6 @@ mcmc_config = {
 }
 ```
 
-### Temperature Ladder
+Results include `temperature_ladder`, `swap_rates`, `round_trip_rate`, and `round_trip_counts` when tempering is active. Use `filter_beta1_samples()` to extract posterior samples.
 
-Temperatures are spaced geometrically between beta=1.0 (target posterior) and beta=beta_min:
-
-```
-beta_i = beta_min^(i / (n_temperatures - 1))  for i = 0, 1, ..., n_temperatures-1
-```
-
-### DEO (Deterministic Even-Odd) Swap Scheme
-
-Adjacent temperature levels swap states using a deterministic alternating pattern:
-- Even rounds: attempt swaps (0<->1), (2<->3), (4<->5), ...
-- Odd rounds: attempt swaps (1<->2), (3<->4), (5<->6), ...
-
-Swaps are accepted with Metropolis probability based on the log-likelihood difference.
-
-### Output
-
-- History contains ALL chains (all temperatures)
-- `temperature_history` array tracks which temperature each chain has at each saved iteration
-- Filter to beta=1 chains post-hoc for posterior inference
+For full details on the index process, DEO scheme, parameter tuning, and diagnostics interpretation, see [docs/tempering.md](./tempering.md).

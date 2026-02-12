@@ -15,6 +15,7 @@
 
 ### Guides
 - [Configuration](./configuration.md) - Data format, MCMC config keys, parallel tempering
+- [Parallel Tempering](./tempering.md) - Index process PT, DEO scheme, temperature tuning
 - [Architecture](./architecture.md) - Coupled chains, data structures, module responsibilities
 - [Development](./development.md) - Adding proposals, defining posteriors, minimal template, testing
 - [Troubleshooting](./troubleshooting.md) - Common errors, debugging, performance, JAX patterns

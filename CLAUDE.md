@@ -49,6 +49,7 @@ bamcmc/
 │   │   ├── scan.py           # JAX scan body and block statistics
 │   │   ├── compile.py        # Kernel compilation and caching
 │   │   ├── diagnostics.py    # R-hat computation and acceptance rates
+│   │   ├── tempering.py      # Parallel tempering swap logic (index process, DEO)
 │   │   └── utils.py          # Misc utilities
 │   ├── proposals/            # 14 proposal distribution implementations
 │   │   ├── __init__.py
@@ -129,9 +130,9 @@ Organizes chains into K superchains with M subchains each. More sensitive to stu
 
 ### Parallel Tempering
 
-Runs chains at different temperatures for multimodal posteriors. Set `n_temperatures > 1` to enable.
+Index-process PT with DEO scheme. Swaps temperature assignments (not states), so each chain maintains a continuous trace. Set `n_temperatures > 1` to enable. Results include `temperature_ladder`, `swap_rates`, `round_trip_rate`, and `round_trip_counts`. Use `filter_beta1_samples()` to extract posterior samples. Public API exports: `filter_beta1_samples`, `compute_round_trip_rate`.
 
--> See [docs/configuration.md](docs/configuration.md)
+-> See [docs/tempering.md](docs/tempering.md) for full details
 
 ### Mixed Proposals
 
