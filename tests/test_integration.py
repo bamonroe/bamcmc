@@ -300,6 +300,135 @@ class TestConvergenceDiagnostics:
         assert diagnostics['wall_time'] >= 0
 
 
+class TestParallelTemperingIntegration:
+    """Integration tests for parallel tempering."""
+
+    def test_tempering_produces_correct_posterior(self, register_test_posteriors):
+        """Test that tempered sampling recovers the correct Normal-Normal posterior."""
+        data, true_params = generate_normal_normal_data()
+
+        mcmc_config = {
+            'posterior_id': 'test_normal_normal_pooled',
+            'gpu_preallocation': True,
+            'use_double': True,
+            'rng_seed': 1977,
+            'benchmark': 0,
+            'burn_iter': 500,
+            'thin_iteration': 1,
+            'num_collect': 1000,
+            'proposal': 'chain_mean',
+            'num_chains_a': 8,
+            'num_chains_b': 8,
+            'last_iters': 1000,
+            'n_temperatures': 4,
+            'beta_min': 0.1,
+        }
+
+        results, _ = rmcmc_single(mcmc_config, data)
+        history = results['history']
+        temp_history = results['temperature_history']
+
+        assert temp_history is not None, "temperature_history should be present"
+
+        # Filter to beta=1 samples
+        from bamcmc import filter_beta1_samples
+        filtered, counts = filter_beta1_samples(history, temp_history)
+        assert filtered is not None, "Should have beta=1 samples"
+        assert filtered.shape[0] > 0, "Should have non-zero beta=1 samples"
+
+        # Validate against analytical posterior
+        from bamcmc import test_posteriors
+        mu_post, tau_post = test_posteriors.normal_normal_pooled_analytical_posterior(data)
+
+        # Use the GQ column (last column) which is mu on the natural scale
+        mu_samples = filtered[:, :, -1].flatten()
+        sample_mean = np.mean(mu_samples)
+
+        # Tolerance is wider for tempered runs (fewer effective beta=1 samples)
+        assert abs(sample_mean - mu_post) < 0.5, (
+            f"Filtered posterior mean {sample_mean:.3f} too far from analytical {mu_post:.3f}"
+        )
+
+    def test_tempering_results_contain_expected_fields(self, register_test_posteriors):
+        """Test that tempering results dict and checkpoint contain expected fields."""
+        data, _ = generate_beta_bernoulli_data()
+
+        mcmc_config = {
+            'posterior_id': 'test_beta_bernoulli_pooled',
+            'gpu_preallocation': True,
+            'use_double': True,
+            'rng_seed': 1977,
+            'benchmark': 0,
+            'burn_iter': 200,
+            'thin_iteration': 1,
+            'num_collect': 500,
+            'proposal': 'chain_mean',
+            'num_chains_a': 4,
+            'num_chains_b': 4,
+            'last_iters': 500,
+            'n_temperatures': 4,
+            'beta_min': 0.1,
+        }
+
+        results, checkpoint = rmcmc_single(mcmc_config, data)
+
+        # Check results dict fields
+        assert results['temperature_history'] is not None
+        assert results['temperature_ladder'] is not None
+        assert results['swap_rates'] is not None
+        assert results['round_trip_rate'] is not None
+        assert results['round_trip_counts'] is not None
+
+        # Check shapes
+        assert results['temperature_ladder'].shape == (4,)
+        assert results['swap_rates'].shape == (3,)  # n_temps - 1 pairs
+        assert results['round_trip_counts'].shape[0] == 8  # num_chains
+
+        # Check swap rates are in reasonable range
+        assert np.all(results['swap_rates'] >= 0.0)
+        assert np.all(results['swap_rates'] <= 1.0)
+
+        # Check checkpoint fields
+        assert checkpoint['n_temperatures'] == 4
+        assert 'temperature_ladder' in checkpoint
+        assert 'temp_assignments_A' in checkpoint
+        assert 'temp_assignments_B' in checkpoint
+        assert 'swap_accepts' in checkpoint
+        assert 'swap_attempts' in checkpoint
+
+    def test_no_tempering_fields_when_disabled(self, register_test_posteriors):
+        """Test that tempering fields are None when n_temperatures=1."""
+        data, _ = generate_beta_bernoulli_data()
+
+        # Use different chain counts from the tempering test to avoid
+        # JAX in-memory kernel cache collision (different carry shapes)
+        mcmc_config = {
+            'posterior_id': 'test_beta_bernoulli_pooled',
+            'gpu_preallocation': True,
+            'use_double': True,
+            'rng_seed': 1977,
+            'benchmark': 0,
+            'burn_iter': 200,
+            'thin_iteration': 1,
+            'num_collect': 500,
+            'proposal': 'chain_mean',
+            'num_chains_a': 6,
+            'num_chains_b': 6,
+            'last_iters': 500,
+        }
+
+        results, checkpoint = rmcmc_single(mcmc_config, data)
+
+        assert results['temperature_history'] is None
+        assert results['temperature_ladder'] is None
+        assert results['swap_rates'] is None
+        assert results['round_trip_rate'] is None
+        assert results['round_trip_counts'] is None
+
+        # Checkpoint should not have tempering fields
+        assert 'n_temperatures' not in checkpoint
+
+
 # ============================================================================
 # CLI RUNNER (for backwards compatibility)
 # ============================================================================
