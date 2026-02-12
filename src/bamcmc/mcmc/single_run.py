@@ -41,6 +41,8 @@ from .diagnostics import (
     compute_and_print_rhat,
     print_acceptance_summary,
     print_swap_acceptance_summary,
+    compute_round_trip_rate,
+    print_round_trip_summary,
 )
 
 # Import batch specs for sampler types
@@ -415,6 +417,10 @@ def _build_results(
     avg_time: Optional[float],
     total_iterations: int,
     final_iteration: int,
+    temperature_ladder: Optional[np.ndarray] = None,
+    swap_rates: Optional[np.ndarray] = None,
+    round_trip_rate: Optional[float] = None,
+    round_trip_counts: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
     """
     Build final results dict from sampling outputs.
@@ -430,6 +436,10 @@ def _build_results(
         avg_time: Average time per iteration
         total_iterations: Total iterations run
         final_iteration: Final iteration number
+        temperature_ladder: Array of beta values (n_temps,), or None if not tempering
+        swap_rates: Per-pair swap acceptance rates (n_temps-1,), or None
+        round_trip_rate: Mean round-trip rate (float), or None
+        round_trip_counts: Per-chain round-trip counts (n_chains,), or None
 
     Returns:
         Results dict with all sampling outputs including temperature_history
@@ -456,7 +466,11 @@ def _build_results(
 
     return {
         'history': host_history,
-        'temperature_history': host_temp_history,  # NEW: temperature index per chain per sample
+        'temperature_history': host_temp_history,  # Temperature index per chain per sample
+        'temperature_ladder': temperature_ladder,   # (n_temps,) array of beta values, or None
+        'swap_rates': swap_rates,                   # (n_temps-1,) per-pair rates, or None
+        'round_trip_rate': round_trip_rate,          # float, or None
+        'round_trip_counts': round_trip_counts,      # (n_chains,) array, or None
         'iterations': iterations,
         'diagnostics': diagnostics,
         'mcmc_config': user_config,
@@ -653,6 +667,22 @@ def rmcmc_single(
             initial_carry, user_config['save_likelihoods'], n_temperatures
         )
 
+    # --- 8b. TEMPERING DIAGNOSTICS ---
+    temperature_ladder = None
+    swap_rates = None
+    round_trip_rate_val = None
+    round_trip_counts = None
+    if n_temperatures > 1:
+        temperature_ladder = np.asarray(jax.device_get(final_carry[9]))
+        swap_accepts_host = np.asarray(jax.device_get(final_carry[12]))
+        swap_attempts_host = np.asarray(jax.device_get(final_carry[13]))
+        swap_rates = np.where(swap_attempts_host > 0,
+                              swap_accepts_host / swap_attempts_host, 0.0)
+        if host_temp_history is not None:
+            round_trip_rate_val, round_trip_counts = compute_round_trip_rate(
+                host_temp_history, n_temperatures)
+            print_round_trip_summary(host_temp_history, n_temperatures)
+
     # --- 9. POST-RUN DIAGNOSTICS ---
     # Build base diagnostics dict
     diagnostics = {
@@ -688,6 +718,10 @@ def rmcmc_single(
         avg_time=avg_time,
         total_iterations=total_iterations,
         final_iteration=final_iteration,
+        temperature_ladder=temperature_ladder,
+        swap_rates=swap_rates,
+        round_trip_rate=round_trip_rate_val,
+        round_trip_counts=round_trip_counts,
     )
 
     # Post-run diagnostics are already in the results diagnostics dict
