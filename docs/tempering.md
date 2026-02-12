@@ -53,14 +53,35 @@ Example with `n_temperatures=8, beta_min=0.1`:
 
 ```python
 mcmc_config = {
-    # ... other config ...
+    'posterior_id': 'my_model',
+    'num_chains_a': 500,
+    'num_chains_b': 500,
+    'num_superchains': 100,
+    'burn_iter': 5000,
+    'num_collect': 10000,
+    'thin_iteration': 10,
+    'use_double': True,
+    # Tempering options
     'n_temperatures': 8,             # Number of temperature levels (1 = disabled)
     'beta_min': 0.1,                 # Minimum inverse temperature (hottest chain)
     'swap_every': 1,                 # Iterations between swap attempts (default: 1)
     'per_temp_proposals': True,      # Separate proposal stats per temperature (default: True)
     'use_deo': True,                 # Use DEO scheme (default: True)
 }
+
+# Use rmcmc for multi-run sampling with automatic checkpointing.
+# Each run saves a checkpoint, so subsequent runs resume from the last
+# iteration. This keeps per-run memory bounded regardless of total
+# sampling length.
+summary = rmcmc(
+    mcmc_config,
+    data,
+    output_dir='./output',
+    run_schedule=[("resume", 10)],   # 10 resume runs
+)
 ```
+
+For single-run workflows (e.g., testing or custom orchestration), use `rmcmc_single()` instead.
 
 ### Chain Count Requirements
 
@@ -68,7 +89,7 @@ When tempering is enabled:
 1. `num_chains` (= `num_chains_a + num_chains_b`) must be divisible by `n_temperatures`
 2. `chains_per_temperature` (= `num_chains / n_temperatures`) must be even (for A/B groups)
 
-Example: `num_chains_a=8, num_chains_b=8, n_temperatures=4` gives 4 chains per temperature (2 in A, 2 in B).
+Example: `num_chains_a=500, num_chains_b=500, n_temperatures=8` gives 125 chains per temperature.
 
 ## Output & Interpretation
 
@@ -88,19 +109,32 @@ When `n_temperatures=1`, all these fields are `None`.
 
 ### Filtering to Target Temperature
 
-The history contains samples from ALL chains at ALL temperatures. For posterior inference, filter to beta=1 samples:
+The history contains samples from ALL chains at ALL temperatures. For posterior inference, filter to beta=1 samples.
+
+When using `rmcmc`, load and combine the saved history files, then filter:
 
 ```python
-from bamcmc import filter_beta1_samples
+from bamcmc import combine_batch_histories, filter_beta1_samples
 
-results, checkpoint = rmcmc_single(config, data)
-history = results['history']
-temp_history = results['temperature_history']
+# After rmcmc completes, combine the per-run history files
+history, temp_history, _ = combine_batch_histories(
+    summary['history_files'], include_temp_history=True
+)
 
 if temp_history is not None:
     filtered, counts = filter_beta1_samples(history, temp_history)
     # filtered: (min_count, n_chains, n_params) - only beta=1 samples
     # counts: (n_chains,) - number of beta=1 samples per chain
+```
+
+With `rmcmc_single`, the results dict contains the arrays directly:
+
+```python
+results, checkpoint = rmcmc_single(config, data)
+if results['temperature_history'] is not None:
+    filtered, counts = filter_beta1_samples(
+        results['history'], results['temperature_history']
+    )
 ```
 
 ### Checkpoint Fields
@@ -162,5 +196,5 @@ Set `n_temperatures=1` (the default) to disable parallel tempering entirely. No 
 ## Computational Cost
 
 - **Per-iteration overhead**: Each swap round evaluates the log-posterior twice per chain (at beta=0 and beta=1) to compute the log-likelihood. This is inherent to the index process design.
-- **Memory**: All chains at all temperatures are stored in the history array. Memory scales as `num_collect * num_chains * n_params`.
+- **Memory**: All chains at all temperatures are stored in the history array. Memory scales as `num_collect * num_chains * n_params`. Because tempering multiplies the effective chain count, use `rmcmc` with multiple shorter runs rather than one long `rmcmc_single` run. Each run checkpoints and frees memory, so total sampling length is not bounded by GPU/host RAM.
 - **Compilation**: Tempering adds temperature swap logic to the compiled kernel. Recompilation is needed when changing `n_temperatures`.
