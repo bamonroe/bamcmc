@@ -91,6 +91,10 @@ from .reset_utils import (
     select_diverse_states,
     init_from_prior,
 )
+from .mcmc.diagnostics import (
+    filter_beta1_samples,
+    compute_round_trip_rate,
+)
 from .posterior_hash import compute_posterior_hash
 from .posterior_benchmark import (
     PosteriorBenchmarkManager,
