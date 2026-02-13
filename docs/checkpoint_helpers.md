@@ -123,11 +123,11 @@ from bamcmc import rmcmc, clean_model_files
 clean_model_files(output_dir, model_name, mode='keep_latest')
 
 # Run MCMC - will resume if checkpoint exists, else start fresh
+mcmc_config['resume_runs'] = 5  # 5 resume runs
 summary = rmcmc(
     mcmc_config,
     data,
     output_dir=output_dir,
-    run_schedule=[("resume", 5)],  # 5 resume runs
     burn_in_fresh=True,            # Only burn-in on fresh runs
 )
 ```

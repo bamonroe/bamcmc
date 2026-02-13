@@ -67,13 +67,14 @@ mcmc_config = {
     'burn_iter': 1000,
     'num_collect': 5000,
     'thin_iteration': 10,
+    'reset_runs': 3,   # 3 reset runs, then...
+    'resume_runs': 5,  # 5 resume runs
 }
 
 summary = rmcmc(
     mcmc_config,
     data,
     output_dir='./output',
-    run_schedule=[('reset', 3), ('resume', 5)],  # 3 reset runs, then 5 resume runs
 )
 
 # Or use rmcmc_single for single-run control
