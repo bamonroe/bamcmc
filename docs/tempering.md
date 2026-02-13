@@ -73,11 +73,11 @@ mcmc_config = {
 # Each run saves a checkpoint, so subsequent runs resume from the last
 # iteration. This keeps per-run memory bounded regardless of total
 # sampling length.
+mcmc_config['resume_runs'] = 10  # 10 resume runs
 summary = rmcmc(
     mcmc_config,
     data,
     output_dir='./output',
-    run_schedule=[("resume", 10)],   # 10 resume runs
 )
 ```
 

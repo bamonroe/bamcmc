@@ -17,6 +17,7 @@ Module layout:
 """
 
 import gc
+import warnings
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
@@ -67,7 +68,6 @@ def rmcmc(
     mcmc_config: Dict[str, Any],
     data: Dict[str, Any],
     output_dir: str,
-    run_schedule: List[Tuple[str, int]],
     calculate_rhat: bool = True,
     burn_in_fresh: bool = True,
     reset_noise_scale: float = 1.0,
@@ -82,18 +82,26 @@ def rmcmc(
     - Fresh runs when no checkpoint exists
     - Optional burn-in only for fresh runs
 
+    The run schedule is configured via mcmc_config keys:
+
+    - **resume_runs** (int, default 1): Number of resume runs. Each resumes
+      from the previous checkpoint (or starts fresh if no checkpoint exists).
+    - **reset_runs** (int, default 0): Number of reset runs. Each resets
+      chains to cross-chain mean + noise (or starts fresh if no checkpoint).
+      Reset runs are scheduled before resume runs.
+    - **run_schedule** (list of tuples, optional): Explicit schedule as
+      [(mode, count), ...] where mode is "reset" or "resume". If provided,
+      reset_runs and resume_runs are ignored (a warning is issued if both
+      are specified).
+
     Args:
-        mcmc_config: MCMC configuration dict (see rmcmc_single for details)
+        mcmc_config: MCMC configuration dict. See rmcmc_single for core keys.
+            Additional keys for run scheduling:
+            - resume_runs (int): Number of resume runs (default 1)
+            - reset_runs (int): Number of reset runs (default 0)
+            - run_schedule (list): Explicit [(mode, count), ...] override
         data: Data dict with 'static', 'int', 'float' arrays
         output_dir: Directory for checkpoint and history files
-        run_schedule: List of (mode, count) tuples specifying the run sequence.
-            Modes:
-            - "reset": Reset chains to cross-chain mean + noise (or fresh if no checkpoint)
-            - "resume": Resume from exact checkpoint state (or fresh if no checkpoint)
-            Examples:
-            - [("reset", 10)]: 10 reset runs (first is fresh if no checkpoint)
-            - [("resume", 5)]: 5 resume runs (first is fresh if no checkpoint)
-            - [("reset", 10), ("resume", 5)]: 10 reset runs then 5 resume runs
         calculate_rhat: Whether to compute R-hat diagnostics each run
         burn_in_fresh: If True, only apply burn_iter to fresh runs (default True)
         reset_noise_scale: Scale factor for noise when resetting (default 1.0)
@@ -115,16 +123,40 @@ def rmcmc(
     Example:
         from bamcmc import rmcmc
 
-        summary = rmcmc(
-            mcmc_config,
-            data,
-            output_dir='./output',
-            run_schedule=[("reset", 10), ("resume", 5)],
-        )
+        # Simple usage: 1 resume run (default)
+        summary = rmcmc(mcmc_config, data, output_dir='./output')
+
+        # Multiple resume runs
+        config = {**mcmc_config, 'resume_runs': 5}
+        summary = rmcmc(config, data, output_dir='./output')
+
+        # Reset runs followed by resume runs
+        config = {**mcmc_config, 'reset_runs': 3, 'resume_runs': 5}
+        summary = rmcmc(config, data, output_dir='./output')
+
         print(f"Completed {summary['total_runs_completed']} runs")
         print(f"History files: {summary['history_files']}")
     """
     model_name = mcmc_config['posterior_id']
+
+    # Resolve run schedule from config
+    run_schedule = mcmc_config.get('run_schedule', None)
+    reset_runs = mcmc_config.get('reset_runs', 0)
+    resume_runs = mcmc_config.get('resume_runs', 1)
+
+    if run_schedule is not None:
+        if 'reset_runs' in mcmc_config or 'resume_runs' in mcmc_config:
+            warnings.warn(
+                "Both 'run_schedule' and 'reset_runs'/'resume_runs' specified in "
+                "mcmc_config. 'reset_runs' and 'resume_runs' will be ignored in "
+                "favor of 'run_schedule'.",
+                UserWarning, stacklevel=2)
+    else:
+        run_schedule = []
+        if reset_runs > 0:
+            run_schedule.append(("reset", reset_runs))
+        if resume_runs > 0:
+            run_schedule.append(("resume", resume_runs))
 
     # Set up directory structure and path constructors
     if use_nested_structure:

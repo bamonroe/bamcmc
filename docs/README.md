@@ -103,11 +103,11 @@ data = {
 # Each run saves a checkpoint, so subsequent runs resume from the last
 # iteration. This keeps per-run memory bounded regardless of total
 # sampling length.
+mcmc_config['resume_runs'] = 5  # 5 resume runs (default is 1)
 summary = rmcmc(
     mcmc_config,
     data,
     output_dir='./output',
-    run_schedule=[("resume", 5)],  # 5 resume runs
 )
 ```
 
@@ -161,11 +161,11 @@ The `static` tuple should contain only hashable values (int, float, tuple) since
 Multi-run sampling with automatic checkpointing (recommended). Each run resumes from the previous checkpoint, keeping per-run memory bounded regardless of total sampling length:
 
 ```python
+mcmc_config['resume_runs'] = 5  # 5 resume runs (default is 1)
 summary = rmcmc(
     mcmc_config,
     data,
     output_dir='./output',
-    run_schedule=[("resume", 5)],  # 5 resume runs
     calculate_rhat=True,
 )
 

@@ -89,6 +89,9 @@ mcmc_config = {
 | `benchmark` | int | `0` | Benchmark iterations |
 | `save_likelihoods` | bool | `False` | Save log-likelihood history |
 | `chunk_size` | int | `100` | Iterations per compiled chunk |
+| `resume_runs` | int | `1` | Number of resume runs for `rmcmc()` |
+| `reset_runs` | int | `0` | Number of reset runs for `rmcmc()` (scheduled before resume runs) |
+| `run_schedule` | list | `None` | Explicit `[(mode, count), ...]` override; ignores resume_runs/reset_runs |
 | `n_temperatures` | int | `1` | Temperature levels (1 = disabled) |
 | `beta_min` | float | `0.1` | Minimum inverse temperature |
 

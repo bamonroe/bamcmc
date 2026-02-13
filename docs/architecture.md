@@ -88,11 +88,13 @@ class RunParams:
 ```python
 from bamcmc import rmcmc
 
+mcmc_config['reset_runs'] = 3   # 3 reset runs, then...
+mcmc_config['resume_runs'] = 5  # 5 resume runs
+
 summary = rmcmc(
     mcmc_config,
     data,
     output_dir='./output',
-    run_schedule=[("reset", 3), ("resume", 5)],  # 3 reset runs, then 5 resume runs
     calculate_rhat=True,
     burn_in_fresh=True,    # Only burn-in on fresh/reset runs
     reset_noise_scale=0.1,
