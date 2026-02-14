@@ -13,6 +13,9 @@
 - [Settings Reference](./settings.md) - Available proposal settings
 - [Checkpoint Helpers](./checkpoint_helpers.md) - Checkpoints, output management, and post-processing
 
+### Examples
+- [Linear Gaussian](./examples/linear_gaussian.md) - Bayesian linear regression with analytical verification
+
 ### Guides
 - [Configuration](./configuration.md) - Data format, MCMC config keys, parallel tempering
 - [Parallel Tempering](./tempering.md) - Index process PT, DEO scheme, temperature tuning
