@@ -15,6 +15,7 @@
 
 ### Examples
 - [Linear Gaussian](./examples/linear_gaussian.md) - Bayesian linear regression with analytical verification
+- [NCP Hierarchical](./examples/ncp_hierarchical.md) - Theta-preserving updates with COUPLED_TRANSFORM
 
 ### Guides
 - [Configuration](./configuration.md) - Data format, MCMC config keys, parallel tempering
