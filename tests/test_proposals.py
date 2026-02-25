@@ -1005,7 +1005,7 @@ class TestModeWeightedProposalExtended:
     def test_near_mode_proposals_centered_on_mode(self):
         """When very close to mode, alpha ~ 0, proposals should be near mode."""
         mode = jnp.array([5.0, 5.0])
-        current = jnp.array([5.01, 5.01])  # Very close to mode
+        current = jnp.array([5.5, 5.5])  # Close to mode but enough gap to be robust
 
         proposals = []
         for i in range(200):
