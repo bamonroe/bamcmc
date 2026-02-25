@@ -259,11 +259,15 @@ All 13 proposals now have test coverage (65 total tests in test_proposals.py).
 - `print_reset_summary()`: smoke tests with plain and mixture models
 - `reset_from_checkpoint()` / `init_from_prior()`: disk I/O roundtrips, model mismatch warning
 
-#### 11. Test Coverage for Tempering and Coupled Transform
+#### 11. ~~Test Coverage for Tempering and Coupled Transform~~ (FIXED)
 
-**Status**: Open. Key sampling internals are only tested indirectly via integration tests:
-- `attempt_temperature_swaps()` in `src/bamcmc/mcmc/tempering.py` — critical for parallel tempering correctness
-- `coupled_transform_step()` in `src/bamcmc/mcmc/sampling.py` — the most sophisticated sampler, no isolated unit test
+**Status**: Fixed. Added 16 tests in `tests/test_tempering_sampling.py`:
+- `attempt_temperature_swaps()`: single-temp no-op, DEO parity toggle, even/odd parity gating,
+  use_deo=False all-pairs, states-not-modified, count accumulation, identical-states-always-accept,
+  assignments-are-permuted (9 tests)
+- `coupled_transform_step()`: basic acceptance, Jacobian effect on acceptance, NaN rejection,
+  coupled indices updated on accept (4 tests)
+- `metropolis_block_step()`: NaN rejection, peaked-posterior acceptance, beta tempering parameter (3 tests)
 
 ### Medium Priority
 
@@ -337,7 +341,7 @@ Major files: `diagnostics.py` (23), `single_run.py` (24), `posterior_benchmark.p
 | ~~Low~~ | ~~Test coverage~~ | tests/ | **FIXED** |
 | ~~High~~ | ~~Test untested proposals~~ | tests/test_proposals.py | **FIXED** |
 | ~~High~~ | ~~Test reset_utils~~ | tests/test_reset_utils.py | **FIXED** |
-| High | Test tempering & coupled transform | tempering.py, sampling.py | Open |
+| ~~High~~ | ~~Test tempering & coupled transform~~ | test_tempering_sampling.py | **FIXED** |
 | Medium | Proposal code duplication | proposals/*.py | Open |
 | Medium | Inconsistent epsilon/nugget constants | scan.py, proposals/common.py | Open |
 | Medium | Type annotations on public API | checkpoint_io.py, history_processing.py, etc. | Open |
