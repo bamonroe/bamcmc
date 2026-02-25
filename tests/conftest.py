@@ -95,7 +95,7 @@ def register_test_posteriors():
             del _REGISTRY[name]
 
 
-def make_settings_array(chain_prob=None, n_categories=None, cov_mult=None, uniform_weight=None, cov_beta=None):
+def make_settings_array(chain_prob=None, n_categories=None, cov_mult=None, uniform_weight=None, cov_beta=None, k_g=None, k_alpha=None):
     """
     Create a settings array for testing proposal functions.
 
@@ -123,6 +123,10 @@ def make_settings_array(chain_prob=None, n_categories=None, cov_mult=None, unifo
         settings[SettingSlot.UNIFORM_WEIGHT] = uniform_weight
     if cov_beta is not None:
         settings[SettingSlot.COV_BETA] = cov_beta
+    if k_g is not None:
+        settings[SettingSlot.K_G] = k_g
+    if k_alpha is not None:
+        settings[SettingSlot.K_ALPHA] = k_alpha
     return jnp.array(settings)
 
 

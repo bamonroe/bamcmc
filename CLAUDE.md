@@ -234,6 +234,96 @@ The following patterns are well-implemented and should be preserved:
 6. **Frozen dataclasses** - Immutability for JAX static args
 7. **Comprehensive docstrings** - Most functions well-documented
 
+### High Priority
+
+#### 9. ~~Test Coverage for Untested Proposal Types~~ (FIXED)
+
+**Status**: Fixed. Added 29 tests for the 5 previously untested proposal types in `tests/test_proposals.py`:
+- `MEAN_MALA`: Hastings ratio formula verification, gradient usage at mean, independence from current state
+- `MODE_WEIGHTED`: Finiteness, near-mode/far-from-mode interpolation, block mask
+- `MCOV_WEIGHTED_VEC`: Per-parameter alpha behavior, near-mean/far-from-mean dynamics, block mask
+- `MCOV_MODE`: Scalar distance targeting, k_g settings effect, near-mode/far-from-mode behavior
+- `MCOV_MODE_VEC`: Per-parameter alpha, consistency with MCOV_MODE, cross-family finiteness
+
+All 13 proposals now have test coverage (65 total tests in test_proposals.py).
+
+#### 10. Test Coverage for reset_utils
+
+**Status**: Open. `src/bamcmc/reset_utils.py` exports 7 public functions with zero test coverage:
+- `generate_reset_states()`
+- `generate_reset_vector()`
+- `reset_from_checkpoint()`
+- `print_reset_summary()`
+- `select_diverse_states()`
+- `init_from_prior()`
+- `compute_chain_statistics()`
+
+This is the chain recovery mechanism — if it breaks silently, users lose runs.
+
+#### 11. Test Coverage for Tempering and Coupled Transform
+
+**Status**: Open. Key sampling internals are only tested indirectly via integration tests:
+- `attempt_temperature_swaps()` in `src/bamcmc/mcmc/tempering.py` — critical for parallel tempering correctness
+- `coupled_transform_step()` in `src/bamcmc/mcmc/sampling.py` — the most sophisticated sampler, no isolated unit test
+
+### Medium Priority
+
+#### 12. Proposal Code Duplication
+
+**Status**: Open. All 13 proposal files repeat identical boilerplate (~30-40 lines each):
+1. Unpack 9-element operand tuple
+2. Delete unused parameters
+3. Split random key and generate proposal key
+4. Extract settings using `SettingSlot` enum
+5. Compute Cholesky decomposition and sample noise
+
+Extracting shared helpers into `src/bamcmc/proposals/common.py` (e.g., operand unpacking, Cholesky + noise generation) would reduce per-proposal boilerplate and make adding new proposals less error-prone.
+
+#### 13. Inconsistent Epsilon/Nugget Constants
+
+**Status**: Open. Multiple regularization constants with different values and no explanation of why they differ:
+- `NUGGET = 1e-5` in `src/bamcmc/mcmc/scan.py`
+- `COV_NUGGET = 1e-6` in `src/bamcmc/proposals/common.py`
+- Multiple hardcoded `1e-10` values scattered through proposal files
+
+If intentionally different, add comments explaining why. If not, consolidate into named constants.
+
+#### 14. Type Annotations on Public Functions
+
+**Status**: Open. Several exported public functions lack parameter/return type hints:
+- `src/bamcmc/checkpoint_io.py`: `save_checkpoint()`, `load_checkpoint()`, `initialize_from_checkpoint()`
+- `src/bamcmc/history_processing.py`: `combine_batch_histories()`, `apply_burnin()`, `compute_rhat_from_history()`
+- `src/bamcmc/reset_utils.py`: `generate_reset_states()`, `generate_reset_vector()`, `select_diverse_states()`, etc.
+- `src/bamcmc/error_handling.py`: `validate_mcmc_config()`, `diagnose_sampler_issues()`, `print_diagnostics()`
+
+#### 15. Test Coverage for Benchmark and Hash Systems
+
+**Status**: Open. The benchmarking/caching system is completely untested:
+- `src/bamcmc/posterior_benchmark.py`: `PosteriorBenchmarkManager`, `run_benchmark()`, `get_benchmark_manager()`
+- `src/bamcmc/posterior_hash.py`: `compute_posterior_hash()`
+- `src/bamcmc/prior_config.py`: `save_prior_config()`, `load_prior_config()`
+
+### Lower Priority
+
+#### 16. Large Functions
+
+**Status**: Open. Several functions exceed 200 lines and could benefit from phase extraction:
+- `rmcmc()` in `src/bamcmc/mcmc/backend.py` — 294 lines
+- `rmcmc_single()` in `src/bamcmc/mcmc/single_run.py` — 244 lines
+- `configure_mcmc_system()` in `src/bamcmc/mcmc/config.py` — 197 lines
+
+Extracting phases (validation, initialization, run-loop, diagnostics) would make them easier to test and reason about.
+
+#### 17. Logging vs Print Statements
+
+**Status**: Open. 127+ `print()` calls used for status output across the codebase. Switching to Python's `logging` module would let users control verbosity without code changes (e.g., silence output in library usage, enable debug in troubleshooting).
+
+Major files: `diagnostics.py` (23), `single_run.py` (24), `posterior_benchmark.py` (25), `backend.py` (18), `history_processing.py` (18).
+
+#### 18. Hardcoded Model-Specific Indices in reset_utils
+
+**Status**: Open. `_get_legacy_special_indices()` in `src/bamcmc/reset_utils.py` (lines 85-176) has hardcoded block sizes and parameter offsets for specific mixture models (e.g., `subject_block_size = 20` for mixture_3model_bhm). This couples a utility module to specific posteriors — ideally posteriors would declare their own discrete indices via the registry.
+
 ### Summary Table
 
 | Priority | Issue | File | Status |
@@ -246,3 +336,13 @@ The following patterns are well-implemented and should be preserved:
 | ~~Medium~~ | ~~Settings auto-mapping~~ | settings.py | **FIXED** |
 | ~~Low~~ | ~~Dispatch assertion~~ | sampling.py | **FIXED** |
 | ~~Low~~ | ~~Test coverage~~ | tests/ | **FIXED** |
+| ~~High~~ | ~~Test untested proposals~~ | tests/test_proposals.py | **FIXED** |
+| High | Test reset_utils | tests/, reset_utils.py | Open |
+| High | Test tempering & coupled transform | tempering.py, sampling.py | Open |
+| Medium | Proposal code duplication | proposals/*.py | Open |
+| Medium | Inconsistent epsilon/nugget constants | scan.py, proposals/common.py | Open |
+| Medium | Type annotations on public API | checkpoint_io.py, history_processing.py, etc. | Open |
+| Medium | Test benchmark/hash systems | posterior_benchmark.py, posterior_hash.py | Open |
+| Low | Large functions (200+ lines) | backend.py, single_run.py, config.py | Open |
+| Low | Logging vs print statements | Multiple files (127+ prints) | Open |
+| Low | Hardcoded model indices | reset_utils.py | Open |

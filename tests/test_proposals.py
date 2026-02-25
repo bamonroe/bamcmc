@@ -25,6 +25,8 @@ from bamcmc.proposals import (
     mcov_weighted_proposal,
     mcov_weighted_vec_proposal,
     mcov_smooth_proposal,
+    mcov_mode_proposal,
+    mcov_mode_vec_proposal,
 )
 from bamcmc.settings import SettingSlot, MAX_SETTINGS, SETTING_DEFAULTS
 
@@ -863,3 +865,622 @@ class TestMcovWeightedProposal:
         # Third dimension should be unchanged
         assert proposal[2] == current_block[2]
         assert proposal.shape == (3,)
+
+
+# ============================================================================
+# MEAN_MALA PROPOSAL TESTS
+# ============================================================================
+
+class TestMeanMalaProposal:
+    """Test MEAN_MALA (gradient at coupled mean) proposal."""
+
+    def test_hastings_ratio_is_finite(self):
+        """Hastings ratio should be finite for various configurations."""
+        mean = jnp.array([0.0, 0.0])
+
+        for current in [jnp.array([0.1, 0.1]), jnp.array([5.0, 5.0])]:
+            key = jax.random.PRNGKey(42)
+            operand = make_test_operand(dim=2, current=current, mean=mean, key=key)
+            _, log_ratio, _ = mean_mala_proposal(operand)
+            assert jnp.isfinite(log_ratio), f"Non-finite ratio at {current}"
+
+    def test_uses_gradient_at_mean(self):
+        """Proposal should be shifted by gradient evaluated at mean, not current."""
+        current = jnp.array([10.0, 10.0])
+        mean = jnp.array([0.0, 0.0])
+
+        # Gradient that pushes toward positive direction from the mean
+        def grad_positive(x):
+            return jnp.array([1.0, 1.0])
+
+        # Gradient that pushes toward negative direction from the mean
+        def grad_negative(x):
+            return jnp.array([-1.0, -1.0])
+
+        proposals_pos = []
+        proposals_neg = []
+
+        for i in range(200):
+            key = jax.random.PRNGKey(i)
+
+            op_pos = make_test_operand(dim=2, current=current, mean=mean,
+                                       key=key, grad_fn=grad_positive)
+            prop_pos, _, _ = mean_mala_proposal(op_pos)
+            proposals_pos.append(prop_pos)
+
+            op_neg = make_test_operand(dim=2, current=current, mean=mean,
+                                       key=key, grad_fn=grad_negative)
+            prop_neg, _, _ = mean_mala_proposal(op_neg)
+            proposals_neg.append(prop_neg)
+
+        mean_pos = jnp.mean(jnp.stack(proposals_pos), axis=0)
+        mean_neg = jnp.mean(jnp.stack(proposals_neg), axis=0)
+
+        # Positive gradient should shift proposals in positive direction
+        assert mean_pos[0] > mean_neg[0], \
+            f"Gradient should shift proposals: pos={mean_pos}, neg={mean_neg}"
+
+    def test_proposal_independent_of_current(self):
+        """Mean-MALA is an independent proposal; different current states
+        should produce statistically similar proposal distributions."""
+        mean = jnp.array([0.0, 0.0])
+
+        proposals_a = []
+        proposals_b = []
+
+        for i in range(300):
+            key = jax.random.PRNGKey(i)
+
+            op_a = make_test_operand(dim=2, current=jnp.array([1.0, 1.0]),
+                                     mean=mean, key=key)
+            prop_a, _, _ = mean_mala_proposal(op_a)
+            proposals_a.append(prop_a)
+
+            op_b = make_test_operand(dim=2, current=jnp.array([10.0, 10.0]),
+                                     mean=mean, key=key)
+            prop_b, _, _ = mean_mala_proposal(op_b)
+            proposals_b.append(prop_b)
+
+        mean_a = jnp.mean(jnp.stack(proposals_a), axis=0)
+        mean_b = jnp.mean(jnp.stack(proposals_b), axis=0)
+
+        # Both should be centered near the mean (not near their current states)
+        assert jnp.allclose(mean_a, mean_b, atol=0.3), \
+            f"Independent proposal should not depend on current: a={mean_a}, b={mean_b}"
+
+    def test_hastings_ratio_formula(self):
+        """Verify Hastings ratio matches the documented formula.
+
+        For mean-MALA with center c = mean + drift:
+        log_ratio = 0.5 * (||proposal - c||^2_Sigma - ||current - c||^2_Sigma) / cov_mult
+        """
+        mean = jnp.array([0.0, 0.0])
+        cov = jnp.eye(2)
+        current = jnp.array([2.0, 3.0])
+
+        key = jax.random.PRNGKey(42)
+        operand = make_test_operand(dim=2, current=current, mean=mean, cov=cov, key=key)
+        proposal, log_ratio, _ = mean_mala_proposal(operand)
+
+        # Recompute the center manually: c = mean + 0.5 * cov_mult * cov @ grad(mean)
+        # With dummy_grad_fn returning zeros, drift = 0, center = mean
+        center = mean  # grad=0 so no drift
+        cov_mult = 1.0  # default
+
+        # log_ratio = 0.5 * (||proposal - center||^2 - ||current - center||^2) / cov_mult
+        dist_sq_proposal = jnp.sum((proposal - center)**2)  # cov=I so Mahalanobis = Euclidean
+        dist_sq_current = jnp.sum((current - center)**2)
+        expected_ratio = 0.5 * (dist_sq_proposal - dist_sq_current) / cov_mult
+
+        assert jnp.isclose(log_ratio, expected_ratio, atol=1e-5), \
+            f"Expected {expected_ratio}, got {log_ratio}"
+
+
+# ============================================================================
+# MODE_WEIGHTED PROPOSAL TESTS (extended)
+# ============================================================================
+
+class TestModeWeightedProposalExtended:
+    """Extended tests for mode_weighted proposal."""
+
+    def test_hastings_ratio_is_finite(self):
+        """Hastings ratio should be finite across various distances from mode."""
+        mode = jnp.array([0.0, 0.0])
+        test_points = [
+            jnp.array([0.0, 0.0]),     # At mode
+            jnp.array([1.0, 1.0]),     # Near mode
+            jnp.array([10.0, 10.0]),   # Far from mode
+        ]
+
+        for current in test_points:
+            key = jax.random.PRNGKey(42)
+            key_op, current_block, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+                dim=2, current=current
+            )
+            operand = (key, current_block, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+            _, log_ratio, _ = mode_weighted_proposal(operand)
+
+            assert jnp.isfinite(log_ratio), f"Non-finite ratio at {current}"
+
+    def test_near_mode_proposals_centered_on_mode(self):
+        """When very close to mode, alpha ~ 0, proposals should be near mode."""
+        mode = jnp.array([5.0, 5.0])
+        current = jnp.array([5.01, 5.01])  # Very close to mode
+
+        proposals = []
+        for i in range(200):
+            key = jax.random.PRNGKey(i)
+            _, _, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+                dim=2, current=current
+            )
+            operand = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+            prop, _, _ = mode_weighted_proposal(operand)
+            proposals.append(prop)
+
+        mean_proposal = jnp.mean(jnp.stack(proposals), axis=0)
+        # Should be close to mode since alpha ~ 0
+        assert jnp.linalg.norm(mean_proposal - mode) < jnp.linalg.norm(mean_proposal - current)
+
+    def test_far_from_mode_proposals_near_current(self):
+        """When far from mode, alpha ~ 1, proposals should be near current state."""
+        mode = jnp.array([0.0, 0.0])
+        current = jnp.array([100.0, 100.0])  # Very far from mode
+
+        proposals = []
+        for i in range(200):
+            key = jax.random.PRNGKey(i)
+            _, _, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+                dim=2, current=current
+            )
+            operand = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+            prop, _, _ = mode_weighted_proposal(operand)
+            proposals.append(prop)
+
+        mean_proposal = jnp.mean(jnp.stack(proposals), axis=0)
+        # Should be closer to current than to mode
+        assert jnp.linalg.norm(mean_proposal - current) < jnp.linalg.norm(mean_proposal - mode)
+
+    def test_respects_block_mask(self):
+        """Masked dimensions should not change."""
+        mode = jnp.array([0.0, 0.0, 0.0])
+        current = jnp.array([5.0, 5.0, 5.0])
+
+        key, _, step_mean, cov, coupled, _, settings, grad_fn, _ = make_test_operand(
+            dim=3, current=current
+        )
+        block_mask = jnp.array([1.0, 1.0, 0.0])
+
+        operand = (key, current, step_mean, cov, coupled, block_mask, settings, grad_fn, mode)
+        proposal, _, _ = mode_weighted_proposal(operand)
+
+        assert jnp.isclose(proposal[2], current[2], atol=1e-6)
+
+
+# ============================================================================
+# MCOV_WEIGHTED_VEC PROPOSAL TESTS
+# ============================================================================
+
+class TestMcovWeightedVecProposal:
+    """Test MCOV_WEIGHTED_VEC (vectorized per-parameter MCOV) proposal."""
+
+    def test_runs_and_returns_correct_shape(self):
+        """Basic smoke test."""
+        key = jax.random.PRNGKey(42)
+        operand = make_test_operand(dim=3, key=key)
+        proposal, log_ratio, new_key = mcov_weighted_vec_proposal(operand)
+
+        assert proposal.shape == (3,)
+        assert jnp.isfinite(log_ratio)
+
+    def test_hastings_ratio_finite_across_distances(self):
+        """Hastings ratio should be finite at various distances from mean."""
+        mean = jnp.array([0.0, 0.0])
+        distances = [0.01, 1.0, 5.0, 20.0]
+
+        for d in distances:
+            current = jnp.array([d, d])
+            key = jax.random.PRNGKey(42)
+            operand = make_test_operand(dim=2, current=current, mean=mean, key=key)
+            prop, log_ratio, _ = mcov_weighted_vec_proposal(operand)
+
+            assert jnp.all(jnp.isfinite(prop)), f"Non-finite proposal at d={d}"
+            assert jnp.isfinite(log_ratio), f"Non-finite ratio at d={d}"
+
+    def test_near_mean_behaves_like_chain_mean(self):
+        """Near equilibrium (d~0), alpha~0, so proposals should center on mean."""
+        mean = jnp.array([0.0, 0.0])
+        current = jnp.array([0.01, 0.01])  # Very close to mean
+
+        proposals = []
+        for i in range(300):
+            key = jax.random.PRNGKey(i)
+            operand = make_test_operand(dim=2, current=current, mean=mean, key=key)
+            prop, _, _ = mcov_weighted_vec_proposal(operand)
+            proposals.append(prop)
+
+        mean_proposal = jnp.mean(jnp.stack(proposals), axis=0)
+        # Near mean, alpha ~ 0, so proposals should center near the coupled mean
+        assert jnp.linalg.norm(mean_proposal - mean) < 0.5
+
+    def test_far_from_mean_tracks_current(self):
+        """Far from mean, alpha ~ 1, proposals track current state."""
+        mean = jnp.array([0.0, 0.0])
+        current = jnp.array([50.0, 50.0])
+
+        proposals = []
+        for i in range(200):
+            key = jax.random.PRNGKey(i)
+            operand = make_test_operand(dim=2, current=current, mean=mean, key=key)
+            prop, _, _ = mcov_weighted_vec_proposal(operand)
+            proposals.append(prop)
+
+        mean_proposal = jnp.mean(jnp.stack(proposals), axis=0)
+        # Far from mean, alpha ~ 1, proposals should be closer to current
+        assert jnp.linalg.norm(mean_proposal - current) < jnp.linalg.norm(mean_proposal - mean)
+
+    def test_per_parameter_behavior(self):
+        """Parameters at different distances should get different alphas."""
+        mean = jnp.array([0.0, 0.0])
+        # One param near mean, one far
+        current = jnp.array([0.01, 20.0])
+
+        proposals = []
+        for i in range(300):
+            key = jax.random.PRNGKey(i)
+            operand = make_test_operand(dim=2, current=current, mean=mean, key=key)
+            prop, _, _ = mcov_weighted_vec_proposal(operand)
+            proposals.append(prop)
+
+        proposals = jnp.stack(proposals)
+        mean_proposal = jnp.mean(proposals, axis=0)
+
+        # First param (near mean): should be near mean[0] = 0
+        # Second param (far): should be nearer to current[1] = 20
+        assert abs(float(mean_proposal[0])) < abs(float(mean_proposal[1]))
+
+    def test_respects_block_mask(self):
+        """Masked dimensions should not change."""
+        current = jnp.array([1.0, 2.0, 3.0])
+        key, _, mean, cov, coupled, _, settings, grad_fn, mode = make_test_operand(
+            dim=3, current=current
+        )
+        block_mask = jnp.array([1.0, 1.0, 0.0])
+
+        operand = (key, current, mean, cov, coupled, block_mask, settings, grad_fn, mode)
+        proposal, _, _ = mcov_weighted_vec_proposal(operand)
+
+        assert jnp.isclose(proposal[2], current[2], atol=1e-6)
+
+
+# ============================================================================
+# MCOV_MODE PROPOSAL TESTS
+# ============================================================================
+
+class TestMcovModeProposal:
+    """Test MCOV_MODE (mode-targeting with scalar distance) proposal."""
+
+    def test_runs_and_returns_correct_shape(self):
+        """Basic smoke test."""
+        mode = jnp.array([0.0, 0.0])
+        current = jnp.array([1.0, 1.0])
+        key = jax.random.PRNGKey(42)
+
+        _, _, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+            dim=2, current=current
+        )
+        operand = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+        proposal, log_ratio, _ = mcov_mode_proposal(operand)
+
+        assert proposal.shape == (2,)
+        assert jnp.isfinite(log_ratio)
+
+    def test_hastings_ratio_finite_across_distances(self):
+        """Hastings ratio should be finite at various distances from mode."""
+        mode = jnp.array([0.0, 0.0])
+
+        for d in [0.01, 1.0, 5.0, 10.0, 30.0]:
+            current = jnp.array([d, d])
+            key = jax.random.PRNGKey(42)
+            _, _, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+                dim=2, current=current
+            )
+            operand = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+            prop, log_ratio, _ = mcov_mode_proposal(operand)
+
+            assert jnp.all(jnp.isfinite(prop)), f"Non-finite proposal at d={d}"
+            assert jnp.isfinite(log_ratio), f"Non-finite ratio at d={d}"
+
+    def test_near_mode_centered_on_mode(self):
+        """When near mode, alpha ~ 0, proposals should be near mode."""
+        mode = jnp.array([5.0, 5.0])
+        current = jnp.array([5.01, 5.01])
+
+        proposals = []
+        for i in range(300):
+            key = jax.random.PRNGKey(i)
+            _, _, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+                dim=2, current=current
+            )
+            operand = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+            prop, _, _ = mcov_mode_proposal(operand)
+            proposals.append(prop)
+
+        mean_proposal = jnp.mean(jnp.stack(proposals), axis=0)
+        assert jnp.linalg.norm(mean_proposal - mode) < jnp.linalg.norm(mean_proposal - current)
+
+    def test_far_from_mode_tracks_current(self):
+        """When far from mode, alpha ~ 1 and g ~ 0, proposals stay near current."""
+        mode = jnp.array([0.0, 0.0])
+        current = jnp.array([50.0, 50.0])
+
+        proposals = []
+        for i in range(200):
+            key = jax.random.PRNGKey(i)
+            _, _, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+                dim=2, current=current
+            )
+            operand = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+            prop, _, _ = mcov_mode_proposal(operand)
+            proposals.append(prop)
+
+        mean_proposal = jnp.mean(jnp.stack(proposals), axis=0)
+        assert jnp.linalg.norm(mean_proposal - current) < jnp.linalg.norm(mean_proposal - mode)
+
+    def test_k_g_affects_variance_scaling(self):
+        """Different k_g values should produce different proposal spread."""
+        mode = jnp.array([0.0, 0.0])
+        current = jnp.array([5.0, 5.0])
+
+        proposals_small_k = []
+        proposals_large_k = []
+
+        for i in range(200):
+            key = jax.random.PRNGKey(i)
+            _, _, step_mean, cov, coupled, mask, _, grad_fn, _ = make_test_operand(
+                dim=2, current=current
+            )
+            # Small k_g -> g decays faster -> smaller variance when far
+            settings_small = make_settings_array(k_g=2.0, k_alpha=3.0)
+            operand_small = (key, current, step_mean, cov, coupled, mask, settings_small, grad_fn, mode)
+            prop_s, _, _ = mcov_mode_proposal(operand_small)
+            proposals_small_k.append(prop_s)
+
+            # Large k_g -> g decays slower -> larger variance when far
+            settings_large = make_settings_array(k_g=50.0, k_alpha=3.0)
+            operand_large = (key, current, step_mean, cov, coupled, mask, settings_large, grad_fn, mode)
+            prop_l, _, _ = mcov_mode_proposal(operand_large)
+            proposals_large_k.append(prop_l)
+
+        var_small = jnp.var(jnp.stack(proposals_small_k), axis=0)
+        var_large = jnp.var(jnp.stack(proposals_large_k), axis=0)
+
+        # Larger k_g means g stays closer to 1 -> more variance
+        assert jnp.all(var_large > var_small), \
+            f"Larger k_g should give more variance: large={var_large}, small={var_small}"
+
+    def test_respects_block_mask(self):
+        """Masked dimensions should not change."""
+        mode = jnp.array([0.0, 0.0, 0.0])
+        current = jnp.array([5.0, 5.0, 5.0])
+
+        key, _, step_mean, cov, coupled, _, settings, grad_fn, _ = make_test_operand(
+            dim=3, current=current
+        )
+        block_mask = jnp.array([1.0, 1.0, 0.0])
+
+        operand = (key, current, step_mean, cov, coupled, block_mask, settings, grad_fn, mode)
+        proposal, _, _ = mcov_mode_proposal(operand)
+
+        assert jnp.isclose(proposal[2], current[2], atol=1e-6)
+
+
+# ============================================================================
+# MCOV_MODE_VEC PROPOSAL TESTS
+# ============================================================================
+
+class TestMcovModeVecProposal:
+    """Test MCOV_MODE_VEC (mode-targeting with per-parameter distance) proposal."""
+
+    def test_runs_and_returns_correct_shape(self):
+        """Basic smoke test."""
+        mode = jnp.array([0.0, 0.0])
+        current = jnp.array([1.0, 1.0])
+        key = jax.random.PRNGKey(42)
+
+        _, _, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+            dim=2, current=current
+        )
+        operand = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+        proposal, log_ratio, _ = mcov_mode_vec_proposal(operand)
+
+        assert proposal.shape == (2,)
+        assert jnp.isfinite(log_ratio)
+
+    def test_hastings_ratio_finite_across_distances(self):
+        """Hastings ratio should be finite at various distances from mode."""
+        mode = jnp.array([0.0, 0.0])
+
+        for d in [0.01, 1.0, 5.0, 10.0, 30.0]:
+            current = jnp.array([d, d])
+            key = jax.random.PRNGKey(42)
+            _, _, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+                dim=2, current=current
+            )
+            operand = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+            prop, log_ratio, _ = mcov_mode_vec_proposal(operand)
+
+            assert jnp.all(jnp.isfinite(prop)), f"Non-finite proposal at d={d}"
+            assert jnp.isfinite(log_ratio), f"Non-finite ratio at d={d}"
+
+    def test_near_mode_centered_on_mode(self):
+        """When near mode, alpha ~ 0, proposals should be near mode."""
+        mode = jnp.array([5.0, 5.0])
+        current = jnp.array([5.01, 5.01])
+
+        proposals = []
+        for i in range(300):
+            key = jax.random.PRNGKey(i)
+            _, _, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+                dim=2, current=current
+            )
+            operand = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+            prop, _, _ = mcov_mode_vec_proposal(operand)
+            proposals.append(prop)
+
+        mean_proposal = jnp.mean(jnp.stack(proposals), axis=0)
+        assert jnp.linalg.norm(mean_proposal - mode) < jnp.linalg.norm(mean_proposal - current)
+
+    def test_far_from_mode_tracks_current(self):
+        """When far from mode, alpha ~ 1 and g ~ 0, proposals stay near current."""
+        mode = jnp.array([0.0, 0.0])
+        current = jnp.array([50.0, 50.0])
+
+        proposals = []
+        for i in range(200):
+            key = jax.random.PRNGKey(i)
+            _, _, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+                dim=2, current=current
+            )
+            operand = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+            prop, _, _ = mcov_mode_vec_proposal(operand)
+            proposals.append(prop)
+
+        mean_proposal = jnp.mean(jnp.stack(proposals), axis=0)
+        assert jnp.linalg.norm(mean_proposal - current) < jnp.linalg.norm(mean_proposal - mode)
+
+    def test_per_parameter_alpha(self):
+        """Parameters at different distances from mode should get different alphas."""
+        mode = jnp.array([0.0, 0.0])
+        # One param near mode, one far
+        current = jnp.array([0.01, 30.0])
+
+        proposals = []
+        for i in range(300):
+            key = jax.random.PRNGKey(i)
+            _, _, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+                dim=2, current=current
+            )
+            operand = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+            prop, _, _ = mcov_mode_vec_proposal(operand)
+            proposals.append(prop)
+
+        proposals = jnp.stack(proposals)
+        mean_proposal = jnp.mean(proposals, axis=0)
+
+        # First param (near mode): alpha ~ 0, should be near mode[0] = 0
+        # Second param (far from mode): alpha ~ 1, should be nearer to current[1] = 30
+        assert abs(float(mean_proposal[0])) < abs(float(mean_proposal[1]))
+
+    def test_respects_block_mask(self):
+        """Masked dimensions should not change."""
+        mode = jnp.array([0.0, 0.0, 0.0])
+        current = jnp.array([5.0, 5.0, 5.0])
+
+        key, _, step_mean, cov, coupled, _, settings, grad_fn, _ = make_test_operand(
+            dim=3, current=current
+        )
+        block_mask = jnp.array([1.0, 1.0, 0.0])
+
+        operand = (key, current, step_mean, cov, coupled, block_mask, settings, grad_fn, mode)
+        proposal, _, _ = mcov_mode_vec_proposal(operand)
+
+        assert jnp.isclose(proposal[2], current[2], atol=1e-6)
+
+    def test_consistency_with_mcov_mode_at_equal_distances(self):
+        """When all params are at same distance, scalar and vec should have similar alpha."""
+        mode = jnp.array([0.0, 0.0])
+        current = jnp.array([3.0, 3.0])  # Symmetric distance
+
+        proposals_scalar = []
+        proposals_vec = []
+
+        for i in range(200):
+            key = jax.random.PRNGKey(i)
+            _, _, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+                dim=2, current=current
+            )
+            op_scalar = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+            prop_s, _, _ = mcov_mode_proposal(op_scalar)
+            proposals_scalar.append(prop_s)
+
+            op_vec = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+            prop_v, _, _ = mcov_mode_vec_proposal(op_vec)
+            proposals_vec.append(prop_v)
+
+        mean_scalar = jnp.mean(jnp.stack(proposals_scalar), axis=0)
+        mean_vec = jnp.mean(jnp.stack(proposals_vec), axis=0)
+
+        # Both should pull similarly toward mode when distances are equal
+        # (not exactly equal due to different distance computations, but same direction)
+        dist_scalar = jnp.linalg.norm(mean_scalar - mode)
+        dist_vec = jnp.linalg.norm(mean_vec - mode)
+
+        # Both should be between mode and current
+        dist_current = jnp.linalg.norm(current - mode)
+        assert dist_scalar < dist_current
+        assert dist_vec < dist_current
+
+
+# ============================================================================
+# CROSS-PROPOSAL CONSISTENCY: MCOV_MODE FAMILY
+# ============================================================================
+
+class TestMcovModeFamilyConsistency:
+    """Test consistency across the MCOV_MODE proposal family."""
+
+    def test_all_mcov_proposals_finite_across_range(self):
+        """All MCOV proposals should be well-behaved across parameter space."""
+        proposals_to_test = [
+            mcov_weighted_proposal,
+            mcov_weighted_vec_proposal,
+            mcov_smooth_proposal,
+            mcov_mode_proposal,
+            mcov_mode_vec_proposal,
+        ]
+
+        mean = jnp.array([0.0, 0.0])
+        mode = jnp.array([0.0, 0.0])
+        distances = [0.1, 1.0, 5.0, 10.0, 50.0]
+
+        for proposal_fn in proposals_to_test:
+            for d in distances:
+                current = jnp.array([d, d])
+                key = jax.random.PRNGKey(int(d * 100))
+                _, _, step_mean, cov, coupled, mask, settings, grad_fn, _ = make_test_operand(
+                    dim=2, current=current, mean=mean, key=key
+                )
+                operand = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+
+                prop, log_ratio, _ = proposal_fn(operand)
+
+                assert jnp.all(jnp.isfinite(prop)), \
+                    f"{proposal_fn.__name__} produced non-finite proposal at d={d}"
+                assert jnp.isfinite(log_ratio), \
+                    f"{proposal_fn.__name__} produced non-finite ratio at d={d}"
+
+    def test_single_dimension(self):
+        """All new proposals work with 1D parameters."""
+        proposals = [
+            mean_mala_proposal,
+            mode_weighted_proposal,
+            mcov_weighted_vec_proposal,
+            mcov_mode_proposal,
+            mcov_mode_vec_proposal,
+        ]
+
+        for proposal_fn in proposals:
+            current = jnp.array([3.0])
+            mean = jnp.array([0.0])
+            mode = jnp.array([0.0])
+            cov = jnp.array([[1.0]])
+
+            key = jax.random.PRNGKey(42)
+            _, _, step_mean, _, coupled, mask, settings, grad_fn, _ = make_test_operand(
+                dim=1, current=current, mean=mean, cov=cov, key=key
+            )
+            operand = (key, current, step_mean, cov, coupled, mask, settings, grad_fn, mode)
+
+            prop, log_ratio, _ = proposal_fn(operand)
+
+            assert prop.shape == (1,), f"{proposal_fn.__name__} wrong shape"
+            assert jnp.isfinite(log_ratio), f"{proposal_fn.__name__} non-finite ratio"
