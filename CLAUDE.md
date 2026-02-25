@@ -247,18 +247,17 @@ The following patterns are well-implemented and should be preserved:
 
 All 13 proposals now have test coverage (65 total tests in test_proposals.py).
 
-#### 10. Test Coverage for reset_utils
+#### 10. ~~Test Coverage for reset_utils~~ (FIXED)
 
-**Status**: Open. `src/bamcmc/reset_utils.py` exports 7 public functions with zero test coverage:
-- `generate_reset_states()`
-- `generate_reset_vector()`
-- `reset_from_checkpoint()`
-- `print_reset_summary()`
-- `select_diverse_states()`
-- `init_from_prior()`
-- `compute_chain_statistics()`
-
-This is the chain recovery mechanism — if it breaks silently, users lose runs.
+**Status**: Fixed. Added 30 tests in `tests/test_reset_utils.py` covering all 7 public functions:
+- `compute_chain_statistics()`: basic math, single chain, unequal groups
+- `get_discrete_param_indices()`: all 3 mixture models + unknown model fallback
+- `_get_legacy_special_indices()`: z/pi/r index structure for 3-model and 4-model
+- `generate_reset_states()`: shape, reproducibility, near-mean centering, noise_scale, discrete param sampling
+- `generate_reset_vector()`: flat shape, subchain replication, superchain diversity
+- `select_diverse_states()`: shape, K==n_chains, K>n_chains error, actual chain states, uniqueness
+- `print_reset_summary()`: smoke tests with plain and mixture models
+- `reset_from_checkpoint()` / `init_from_prior()`: disk I/O roundtrips, model mismatch warning
 
 #### 11. Test Coverage for Tempering and Coupled Transform
 
@@ -337,7 +336,7 @@ Major files: `diagnostics.py` (23), `single_run.py` (24), `posterior_benchmark.p
 | ~~Low~~ | ~~Dispatch assertion~~ | sampling.py | **FIXED** |
 | ~~Low~~ | ~~Test coverage~~ | tests/ | **FIXED** |
 | ~~High~~ | ~~Test untested proposals~~ | tests/test_proposals.py | **FIXED** |
-| High | Test reset_utils | tests/, reset_utils.py | Open |
+| ~~High~~ | ~~Test reset_utils~~ | tests/test_reset_utils.py | **FIXED** |
 | High | Test tempering & coupled transform | tempering.py, sampling.py | Open |
 | Medium | Proposal code duplication | proposals/*.py | Open |
 | Medium | Inconsistent epsilon/nugget constants | scan.py, proposals/common.py | Open |
