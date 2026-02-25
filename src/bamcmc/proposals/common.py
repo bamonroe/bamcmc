@@ -6,6 +6,7 @@ proposal implementations to reduce code duplication.
 
 Constants:
     COV_NUGGET: Small regularization constant for covariance matrix inversion
+    NUMERICAL_EPS: Small epsilon for numerical stability (division, log, sqrt)
 
 Functions:
     unpack_operand: Unpack the 9-element operand tuple into a named struct
@@ -29,10 +30,16 @@ import jax.scipy.linalg
 from ..settings import SettingSlot
 
 
-# Regularization constant for covariance matrix inversion
+# Regularization constant for covariance matrix inversion in proposals.
 # Small enough to not affect well-conditioned matrices,
-# large enough to prevent numerical issues with ill-conditioned ones
+# large enough to prevent numerical issues with ill-conditioned ones.
+# Note: mcmc/scan.py uses a larger NUGGET = 1e-5 for block statistics
+# computed from running chain samples, which can be noisier.
 COV_NUGGET = 1e-6
+
+# Small epsilon for numerical stability (prevents division by zero,
+# log(0), and sqrt(0) in proposal computations).
+NUMERICAL_EPS = 1e-10
 
 
 # Named tuple for unpacked operand fields
@@ -172,11 +179,11 @@ def hastings_ratio_scalar_g(L, ndim, proposal, current_block,
 
     diff_forward = (proposal - prop_mean_fwd) * block_mask
     y_forward = jax.scipy.linalg.solve_triangular(L, diff_forward, lower=True)
-    dist_sq_forward = jnp.sum(y_forward ** 2) / (g_fwd + 1e-10)
+    dist_sq_forward = jnp.sum(y_forward ** 2) / (g_fwd + NUMERICAL_EPS)
 
     diff_reverse = (current_block - prop_mean_rev) * block_mask
     y_reverse = jax.scipy.linalg.solve_triangular(L, diff_reverse, lower=True)
-    dist_sq_reverse = jnp.sum(y_reverse ** 2) / (g_rev + 1e-10)
+    dist_sq_reverse = jnp.sum(y_reverse ** 2) / (g_rev + NUMERICAL_EPS)
 
     return log_det_term - 0.5 * (dist_sq_reverse - dist_sq_forward)
 
@@ -212,7 +219,7 @@ def compute_mahalanobis(diff, L):
         d: Mahalanobis distance (scalar)
     """
     y = jax.scipy.linalg.solve_triangular(L, diff, lower=True)
-    d = jnp.sqrt(jnp.sum(y ** 2) + 1e-10)
+    d = jnp.sqrt(jnp.sum(y ** 2) + NUMERICAL_EPS)
     return y, d
 
 
@@ -234,7 +241,7 @@ def compute_alpha_linear(d, k):
     Returns:
         alpha: Interpolation weight in [0, 1]
     """
-    return d / (d + k + 1e-10)
+    return d / (d + k + NUMERICAL_EPS)
 
 
 def compute_alpha_g_scalar(d, k_g, k_alpha):
@@ -259,13 +266,13 @@ def compute_alpha_g_scalar(d, k_g, k_alpha):
     g = 1.0 / (1.0 + (d / k_g) ** 2)
 
     # d2: distance in proposal metric
-    sqrt_g = jnp.sqrt(jnp.maximum(g, 1e-10))
-    d2 = d / (sqrt_g + 1e-10)
+    sqrt_g = jnp.sqrt(jnp.maximum(g, NUMERICAL_EPS))
+    d2 = d / (sqrt_g + NUMERICAL_EPS)
 
     # alpha: rises from 0 toward 1 as d2 increases
     d2_sq = d2 ** 2
     k_alpha_sq = k_alpha ** 2
-    alpha = d2_sq / (d2_sq + k_alpha_sq + 1e-10)
+    alpha = d2_sq / (d2_sq + k_alpha_sq + NUMERICAL_EPS)
 
     return alpha, g
 
@@ -295,13 +302,13 @@ def compute_alpha_g_vec(d_vec, block_mask, k_g, k_alpha):
     g_vec = 1.0 / (1.0 + (d_vec / k_g) ** 2)
 
     # d2 per parameter: distance in proposal metric
-    sqrt_g_vec = jnp.sqrt(jnp.maximum(g_vec, 1e-10))
-    d2_vec = d_vec / (sqrt_g_vec + 1e-10)
+    sqrt_g_vec = jnp.sqrt(jnp.maximum(g_vec, NUMERICAL_EPS))
+    d2_vec = d_vec / (sqrt_g_vec + NUMERICAL_EPS)
 
     # alpha per parameter: rises from 0 toward 1 as d2 increases
     d2_sq = d2_vec ** 2
     k_alpha_sq = k_alpha ** 2
-    alpha_vec = d2_sq / (d2_sq + k_alpha_sq + 1e-10)
+    alpha_vec = d2_sq / (d2_sq + k_alpha_sq + NUMERICAL_EPS)
 
     # Scalar g: use minimum across valid parameters (cautious approach)
     # When any parameter is far, use small steps
@@ -332,4 +339,4 @@ def compute_log_det_ratio(g_proposal, g_current, ndim):
     Returns:
         Log-determinant contribution to Hastings ratio
     """
-    return -0.5 * ndim * (jnp.log(g_proposal + 1e-10) - jnp.log(g_current + 1e-10))
+    return -0.5 * ndim * (jnp.log(g_proposal + NUMERICAL_EPS) - jnp.log(g_current + NUMERICAL_EPS))

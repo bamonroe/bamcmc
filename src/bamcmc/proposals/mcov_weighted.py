@@ -46,7 +46,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-from .common import unpack_operand, regularize_covariance, sample_diffusion, compute_log_det_ratio
+from .common import unpack_operand, regularize_covariance, sample_diffusion, compute_log_det_ratio, NUMERICAL_EPS
 
 
 def mcov_weighted_proposal(operand):
@@ -106,17 +106,17 @@ def mcov_weighted_proposal(operand):
     # When beta=0: g=1, reduces to MEAN_WEIGHTED
     # When beta>0: g>1 when d>0, covariance expands with distance
     # When beta<0: g<1, covariance shrinks (minimum is 1+beta when d→∞)
-    g_current_raw = 1.0 + cov_beta * d1_current / (d1_current + k + 1e-10)
+    g_current_raw = 1.0 + cov_beta * d1_current / (d1_current + k + NUMERICAL_EPS)
     # Safety clamp: ensure g >= 0.1 to prevent numerical issues with sqrt(g)
     # Also clamp to reasonable max to prevent explosion
     g_current = jnp.clip(g_current_raw, 0.1, 10.0)
 
     # === STEP 3: Compute d2 (distance in weighted metric) ===
     # d2 = d1 / sqrt(g) because Σ_weighted = g * Σ
-    d2_current = d1_current / jnp.sqrt(g_current + 1e-10)
+    d2_current = d1_current / jnp.sqrt(g_current + NUMERICAL_EPS)
 
     # === STEP 4: Compute alpha using d2 ===
-    alpha_current = d2_current / (d2_current + k + 1e-10)
+    alpha_current = d2_current / (d2_current + k + NUMERICAL_EPS)
 
     # === STEP 5: Compute proposal mean ===
     prop_mean_current = alpha_current * op.current_block + (1.0 - alpha_current) * op.step_mean
@@ -133,10 +133,10 @@ def mcov_weighted_proposal(operand):
     y_proposal = jax.scipy.linalg.solve_triangular(L, diff_proposal, lower=True)
     d1_proposal = jnp.sqrt(jnp.sum(y_proposal**2))
 
-    g_proposal_raw = 1.0 + cov_beta * d1_proposal / (d1_proposal + k + 1e-10)
+    g_proposal_raw = 1.0 + cov_beta * d1_proposal / (d1_proposal + k + NUMERICAL_EPS)
     g_proposal = jnp.clip(g_proposal_raw, 0.1, 10.0)  # Same safety clamp as forward
-    d2_proposal = d1_proposal / jnp.sqrt(g_proposal + 1e-10)
-    alpha_proposal = d2_proposal / (d2_proposal + k + 1e-10)
+    d2_proposal = d1_proposal / jnp.sqrt(g_proposal + NUMERICAL_EPS)
+    alpha_proposal = d2_proposal / (d2_proposal + k + NUMERICAL_EPS)
 
     prop_mean_proposal = alpha_proposal * proposal + (1.0 - alpha_proposal) * op.step_mean
 

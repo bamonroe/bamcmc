@@ -33,6 +33,7 @@ proposals needed, avoiding memory overhead from unused proposals.
 # Common utilities
 from .common import (
     COV_NUGGET,
+    NUMERICAL_EPS,
     Operand,
     ProposalSetup,
     unpack_operand,
@@ -65,6 +66,7 @@ from .mcov_mode_vec import mcov_mode_vec_proposal
 __all__ = [
     # Common utilities
     'COV_NUGGET',
+    'NUMERICAL_EPS',
     'Operand',
     'ProposalSetup',
     'unpack_operand',

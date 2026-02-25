@@ -47,7 +47,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-from .common import unpack_operand, regularize_covariance
+from .common import unpack_operand, regularize_covariance, NUMERICAL_EPS
 
 
 def mcov_weighted_vec_proposal(operand):
@@ -97,7 +97,7 @@ def mcov_weighted_vec_proposal(operand):
     # g_i = 1 + beta * d1_i^2 / (d1_i^2 + k^2)
     # Quadratic ensures g is flat near d=0 (chain_mean-like at equilibrium)
     # When beta<0: g<1, minimum is (1+beta) when d→∞
-    g_vec_current_raw = 1.0 + cov_beta * d1_sq_current / (d1_sq_current + k_sq + 1e-10)
+    g_vec_current_raw = 1.0 + cov_beta * d1_sq_current / (d1_sq_current + k_sq + NUMERICAL_EPS)
     # Safety clamp: ensure g >= 0.1 to prevent numerical issues with sqrt(g)
     # Also clamp to reasonable max to prevent explosion
     g_vec_current = jnp.clip(g_vec_current_raw, 0.1, 10.0)
@@ -111,7 +111,7 @@ def mcov_weighted_vec_proposal(operand):
     # === STEP 4: Per-parameter alpha (quadratic) ===
     # alpha_i = d2_i^2 / (d2_i^2 + k^2)
     # Quadratic ensures alpha is flat near d=0 (chain_mean-like at equilibrium)
-    alpha_vec_current = d2_sq_current / (d2_sq_current + k_sq + 1e-10)
+    alpha_vec_current = d2_sq_current / (d2_sq_current + k_sq + NUMERICAL_EPS)
 
     # === STEP 5: Element-wise proposal mean ===
     prop_mean_current = alpha_vec_current * op.current_block + (1.0 - alpha_vec_current) * op.step_mean
@@ -131,14 +131,14 @@ def mcov_weighted_vec_proposal(operand):
     d1_sq_proposal = d1_vec_proposal * d1_vec_proposal
 
     # Quadratic g for reverse direction
-    g_vec_proposal_raw = 1.0 + cov_beta * d1_sq_proposal / (d1_sq_proposal + k_sq + 1e-10)
+    g_vec_proposal_raw = 1.0 + cov_beta * d1_sq_proposal / (d1_sq_proposal + k_sq + NUMERICAL_EPS)
     g_vec_proposal = jnp.clip(g_vec_proposal_raw, 0.1, 10.0)  # Same safety clamp as forward
     sqrt_g_proposal = jnp.sqrt(g_vec_proposal)  # Safe due to clamp
     d2_vec_proposal = d1_vec_proposal / sqrt_g_proposal
     d2_sq_proposal = d2_vec_proposal * d2_vec_proposal
 
     # Quadratic alpha for reverse direction
-    alpha_vec_proposal = d2_sq_proposal / (d2_sq_proposal + k_sq + 1e-10)
+    alpha_vec_proposal = d2_sq_proposal / (d2_sq_proposal + k_sq + NUMERICAL_EPS)
 
     prop_mean_proposal = alpha_vec_proposal * proposal + (1.0 - alpha_vec_proposal) * op.step_mean
 
@@ -149,8 +149,8 @@ def mcov_weighted_vec_proposal(operand):
     # Log-determinant term (G is diagonal, so det = prod of diagonal):
     # log det(G @ Sigma @ G) = log det(Sigma) + 2*sum(log(sqrt_g)) = log det(Sigma) + sum(log(g))
     # The log det(Sigma) cancels between forward and reverse.
-    log_det_term = -0.5 * (jnp.sum(jnp.log(g_vec_proposal + 1e-10)) -
-                           jnp.sum(jnp.log(g_vec_current + 1e-10)))
+    log_det_term = -0.5 * (jnp.sum(jnp.log(g_vec_proposal + NUMERICAL_EPS)) -
+                           jnp.sum(jnp.log(g_vec_current + NUMERICAL_EPS)))
 
     # Quadratic form for N(y | mu, G @ Sigma @ G):
     # ||y - mu||^2_{(G @ Sigma @ G)^{-1}} = ||G^{-1} @ (y - mu)||^2_{Sigma^{-1}}

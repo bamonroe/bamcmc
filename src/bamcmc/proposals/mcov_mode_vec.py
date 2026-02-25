@@ -54,7 +54,7 @@ import jax.numpy as jnp
 
 from ..settings import SettingSlot
 from .common import (prepare_proposal, sample_diffusion, compute_alpha_g_vec,
-                     hastings_ratio_scalar_g)
+                     hastings_ratio_scalar_g, COV_NUGGET, NUMERICAL_EPS)
 
 
 def mcov_mode_vec_proposal(operand):
@@ -84,16 +84,16 @@ def mcov_mode_vec_proposal(operand):
     ndim = jnp.sum(op.block_mask)
 
     # Extract diagonal standard deviations for per-parameter distances
-    cov_scaled = ps.cov_mult * op.step_cov + 1e-6 * jnp.eye(op.current_block.shape[0])
+    cov_scaled = ps.cov_mult * op.step_cov + COV_NUGGET * jnp.eye(op.current_block.shape[0])
     sigma_diag = jnp.sqrt(jnp.diag(cov_scaled))
 
     # === STEP 1: Compute per-parameter distances from MODE ===
     diff_current = (op.current_block - op.block_mode) * op.block_mask
-    d_vec_current = jnp.abs(diff_current) / (sigma_diag + 1e-10)
+    d_vec_current = jnp.abs(diff_current) / (sigma_diag + NUMERICAL_EPS)
 
     # === STEP 2: Compute per-param alpha and scalar g for current state ===
     alpha_vec_current, g_current = compute_alpha_g_vec(d_vec_current, op.block_mask, k_g, k_alpha)
-    sqrt_g_current = jnp.sqrt(jnp.maximum(g_current, 1e-10))
+    sqrt_g_current = jnp.sqrt(jnp.maximum(g_current, NUMERICAL_EPS))
 
     # === STEP 3: Compute proposal mean (per-parameter interpolation toward MODE) ===
     prop_mean_current = alpha_vec_current * op.current_block + (1.0 - alpha_vec_current) * op.block_mode
@@ -104,7 +104,7 @@ def mcov_mode_vec_proposal(operand):
 
     # === STEP 5: Compute quantities for reverse direction ===
     diff_proposal = (proposal - op.block_mode) * op.block_mask
-    d_vec_proposal = jnp.abs(diff_proposal) / (sigma_diag + 1e-10)
+    d_vec_proposal = jnp.abs(diff_proposal) / (sigma_diag + NUMERICAL_EPS)
 
     alpha_vec_proposal, g_proposal = compute_alpha_g_vec(d_vec_proposal, op.block_mask, k_g, k_alpha)
 

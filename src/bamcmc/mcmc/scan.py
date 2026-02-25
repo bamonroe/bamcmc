@@ -20,7 +20,9 @@ from .sampling import parallel_gibbs_iteration, parallel_gibbs_iteration_per_tem
 from .tempering import attempt_temperature_swaps
 
 
-# Regularization constant for covariance matrices
+# Regularization constant for block statistics covariance matrices.
+# Larger than proposals/common.py COV_NUGGET (1e-6) because block statistics
+# are computed from running chain samples, which can be noisier.
 NUGGET = 1e-5
 
 

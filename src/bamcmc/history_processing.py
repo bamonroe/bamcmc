@@ -11,6 +11,8 @@ This module provides functions for:
 import numpy as np
 from pathlib import Path
 
+from .mcmc.diagnostics import TAU_NESTED_RHAT
+
 
 def combine_batch_histories(batch_paths):
     """
@@ -208,8 +210,7 @@ def compute_rhat_from_history(history, K, M, n_temperatures=1):
         print(f"  WARNING: {n_nan} params have NaN/Inf R-hat (zero variance - stuck or discrete)", flush=True)
 
     # Threshold from Margossian et al. (2022)
-    tau = 1e-4
-    threshold = np.sqrt(1 + 1/M + tau)
+    threshold = np.sqrt(1 + 1/M + TAU_NESTED_RHAT)
     if np.nanmax(rhat) < threshold:
         print(f"  Converged (max < {threshold:.4f})", flush=True)
     else:

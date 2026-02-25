@@ -17,6 +17,10 @@ import numpy as np
 
 from ..batch_specs import SamplerType
 
+# Small regularization constant for nested R-hat threshold.
+# From Margossian et al. (2022), prevents division instability when M is large.
+TAU_NESTED_RHAT = 1e-4
+
 
 @partial(jax.jit, static_argnums=(1, 2))
 def compute_nested_rhat(history: jnp.ndarray, K: int, M: int) -> jnp.ndarray:
@@ -149,9 +153,6 @@ def compute_and_print_rhat(
     continuous_rhat = nrhat_values[continuous_mask]
 
     # Display results for continuous params only
-    # Small regularization constant for nested R-hat threshold
-    # From Margossian et al. (2022), prevents division instability when M is large
-    TAU_NESTED_RHAT = 1e-4
     threshold = np.sqrt(1 + 1/M + TAU_NESTED_RHAT)
 
     if M > 1:

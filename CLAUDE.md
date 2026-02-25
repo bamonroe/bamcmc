@@ -282,14 +282,13 @@ All 13 proposals now have test coverage (65 total tests in test_proposals.py).
 
 All 13 proposals refactored to use these helpers. Saves ~5-15 lines per proposal.
 
-#### 13. Inconsistent Epsilon/Nugget Constants
+#### 13. ~~Inconsistent Epsilon/Nugget Constants~~ (FIXED)
 
-**Status**: Open. Multiple regularization constants with different values and no explanation of why they differ:
-- `NUGGET = 1e-5` in `src/bamcmc/mcmc/scan.py`
-- `COV_NUGGET = 1e-6` in `src/bamcmc/proposals/common.py`
-- Multiple hardcoded `1e-10` values scattered through proposal files
-
-If intentionally different, add comments explaining why. If not, consolidate into named constants.
+**Status**: Fixed. Consolidated numerical constants across proposals:
+- Added `NUMERICAL_EPS = 1e-10` in `proposals/common.py` — replaced all 30+ hardcoded `1e-10` values across 8 proposal files
+- Replaced inline `1e-6` in `mcov_smooth.py` and `mcov_mode_vec.py` with `COV_NUGGET`
+- Added explanatory comments to `COV_NUGGET` (proposals) and `NUGGET` (scan.py) explaining why they differ (1e-6 vs 1e-5)
+- Promoted `TAU_NESTED_RHAT` to module level in `diagnostics.py`, imported in `history_processing.py` instead of duplicating
 
 #### 14. Type Annotations on Public Functions
 
@@ -343,7 +342,7 @@ Major files: `diagnostics.py` (23), `single_run.py` (24), `posterior_benchmark.p
 | ~~High~~ | ~~Test reset_utils~~ | tests/test_reset_utils.py | **FIXED** |
 | ~~High~~ | ~~Test tempering & coupled transform~~ | test_tempering_sampling.py | **FIXED** |
 | ~~Medium~~ | ~~Proposal code duplication~~ | proposals/*.py, common.py | **FIXED** |
-| Medium | Inconsistent epsilon/nugget constants | scan.py, proposals/common.py | Open |
+| ~~Medium~~ | ~~Inconsistent epsilon/nugget constants~~ | scan.py, proposals/common.py | **FIXED** |
 | Medium | Type annotations on public API | checkpoint_io.py, history_processing.py, etc. | Open |
 | Medium | Test benchmark/hash systems | posterior_benchmark.py, posterior_hash.py | Open |
 | Low | Large functions (200+ lines) | backend.py, single_run.py, config.py | Open |

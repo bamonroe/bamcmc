@@ -53,7 +53,7 @@ import jax.numpy as jnp
 
 from ..settings import SettingSlot
 from .common import (prepare_proposal, sample_diffusion, compute_mahalanobis,
-                     compute_alpha_g_scalar, hastings_ratio_scalar_g)
+                     compute_alpha_g_scalar, hastings_ratio_scalar_g, NUMERICAL_EPS)
 
 
 def mcov_mode_proposal(operand):
@@ -87,7 +87,7 @@ def mcov_mode_proposal(operand):
 
     # === STEP 2: Compute scalar alpha and g for current state ===
     alpha_current, g_current = compute_alpha_g_scalar(d_current, k_g, k_alpha)
-    sqrt_g_current = jnp.sqrt(jnp.maximum(g_current, 1e-10))
+    sqrt_g_current = jnp.sqrt(jnp.maximum(g_current, NUMERICAL_EPS))
 
     # === STEP 3: Compute proposal mean (uniform interpolation toward MODE) ===
     prop_mean_current = alpha_current * op.current_block + (1.0 - alpha_current) * op.block_mode

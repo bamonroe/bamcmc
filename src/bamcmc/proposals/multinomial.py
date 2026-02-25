@@ -30,7 +30,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-from .common import unpack_operand
+from .common import unpack_operand, NUMERICAL_EPS
 
 
 def multinomial_proposal(operand):
@@ -109,7 +109,7 @@ def multinomial_proposal(operand):
     def sample_one_dim(key_and_probs):
         k, probs = key_and_probs
         # Sample category index (invalid categories have 0 probability)
-        cat_idx = random.categorical(k, jnp.log(probs + 1e-10))
+        cat_idx = random.categorical(k, jnp.log(probs + NUMERICAL_EPS))
         # Convert back to grid value
         return (cat_idx + GRID_MIN).astype(op.current_block.dtype)
 
@@ -128,8 +128,8 @@ def multinomial_proposal(operand):
 
     def get_log_prob(dim_idx):
         probs = all_probs[dim_idx]
-        log_p_current = jnp.log(probs[current_indices[dim_idx]] + 1e-10)
-        log_p_proposal = jnp.log(probs[proposal_indices[dim_idx]] + 1e-10)
+        log_p_current = jnp.log(probs[current_indices[dim_idx]] + NUMERICAL_EPS)
+        log_p_proposal = jnp.log(probs[proposal_indices[dim_idx]] + NUMERICAL_EPS)
         # Only count active dimensions
         mask_val = op.block_mask[dim_idx]
         return mask_val * (log_p_current - log_p_proposal)
