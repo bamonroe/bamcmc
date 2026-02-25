@@ -19,11 +19,13 @@ Usage:
     )
 """
 
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 from pathlib import Path
 
 
-def compute_chain_statistics(states_A, states_B):
+def compute_chain_statistics(states_A: np.ndarray, states_B: np.ndarray) -> Dict[str, Any]:
     """
     Compute cross-chain mean and std for all parameters.
 
@@ -45,7 +47,7 @@ def compute_chain_statistics(states_A, states_B):
     }
 
 
-def get_discrete_param_indices(model_type, n_subjects):
+def get_discrete_param_indices(model_type: str, n_subjects: int) -> List[int]:
     """
     Get indices of discrete parameters that need special handling during reset.
 
@@ -80,7 +82,7 @@ def get_discrete_param_indices(model_type, n_subjects):
     return special.get('z_indices', [])
 
 
-def _get_legacy_special_indices(model_type, n_subjects):
+def _get_legacy_special_indices(model_type: str, n_subjects: int) -> Dict[str, List[int]]:
     """Legacy function for backward compatibility with old posteriors."""
     if model_type == 'mixture_3model_bhm':
         # Layout per subject: M1(6) + M2(7) + M3(6) + z(1) = 20 params
@@ -176,7 +178,7 @@ def _get_legacy_special_indices(model_type, n_subjects):
         }
 
 
-def generate_reset_states(checkpoint, model_type, n_subjects, K, noise_scale=1.0, rng_seed=None):
+def generate_reset_states(checkpoint: Dict[str, Any], model_type: str, n_subjects: int, K: int, noise_scale: float = 1.0, rng_seed: Optional[int] = None) -> np.ndarray:
     """
     Generate K new starting states based on cross-chain mean and std.
 
@@ -231,7 +233,7 @@ def generate_reset_states(checkpoint, model_type, n_subjects, K, noise_scale=1.0
     return new_states
 
 
-def generate_reset_vector(checkpoint, model_type, n_subjects, K, M, noise_scale=1.0, rng_seed=None):
+def generate_reset_vector(checkpoint: Dict[str, Any], model_type: str, n_subjects: int, K: int, M: int, noise_scale: float = 1.0, rng_seed: Optional[int] = None) -> np.ndarray:
     """
     Generate full initial vector with K superchains replicated M times.
 
@@ -267,8 +269,8 @@ def generate_reset_vector(checkpoint, model_type, n_subjects, K, M, noise_scale=
     return all_states.flatten()
 
 
-def reset_from_checkpoint(checkpoint_path, model_type, n_subjects, K, M,
-                          noise_scale=1.0, rng_seed=None):
+def reset_from_checkpoint(checkpoint_path: str, model_type: str, n_subjects: int, K: int, M: int,
+                          noise_scale: float = 1.0, rng_seed: Optional[int] = None) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
     High-level function to generate reset initial vector from checkpoint.
 
@@ -308,7 +310,7 @@ def reset_from_checkpoint(checkpoint_path, model_type, n_subjects, K, M,
     return init_vector, info
 
 
-def select_diverse_states(checkpoint, K, rng_seed=None):
+def select_diverse_states(checkpoint: Dict[str, Any], K: int, rng_seed: Optional[int] = None) -> np.ndarray:
     """
     Select K diverse states from checkpoint chains.
 
@@ -365,7 +367,7 @@ def select_diverse_states(checkpoint, K, rng_seed=None):
     return selected_states
 
 
-def init_from_prior(prior_checkpoint_path, K, M, rng_seed=None):
+def init_from_prior(prior_checkpoint_path: str, K: int, M: int, rng_seed: Optional[int] = None) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
     Generate initialization vector for posterior using prior samples.
 
@@ -423,7 +425,7 @@ def init_from_prior(prior_checkpoint_path, K, M, rng_seed=None):
     return all_states.flatten(), info
 
 
-def print_reset_summary(checkpoint, model_type, n_subjects):
+def print_reset_summary(checkpoint: Dict[str, Any], model_type: str, n_subjects: int) -> None:
     """
     Print summary statistics to help decide on reset parameters.
 

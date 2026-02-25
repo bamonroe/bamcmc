@@ -7,11 +7,13 @@ This module provides functions for:
 - Initializing MCMC carry from loaded checkpoints
 """
 
+from typing import Any, Dict, Optional, Tuple
+
 import numpy as np
 from pathlib import Path
 
 
-def save_checkpoint(filepath, carry, user_config, metadata=None):
+def save_checkpoint(filepath: str, carry: tuple, user_config: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None) -> None:
     """
     Save MCMC checkpoint to disk for resuming later.
 
@@ -75,7 +77,7 @@ def save_checkpoint(filepath, carry, user_config, metadata=None):
     print(f"Checkpoint saved to {filepath}", flush=True)
 
 
-def load_checkpoint(filepath):
+def load_checkpoint(filepath: str) -> Dict[str, Any]:
     """
     Load MCMC checkpoint from disk.
 
@@ -123,7 +125,7 @@ def load_checkpoint(filepath):
     return checkpoint
 
 
-def initialize_from_checkpoint(checkpoint, user_config, runtime_ctx, num_gq, num_collect, num_blocks):
+def initialize_from_checkpoint(checkpoint: Dict[str, Any], user_config: Dict[str, Any], runtime_ctx: Dict[str, Any], num_gq: int, num_collect: int, num_blocks: int) -> Tuple[tuple, Dict[str, Any]]:
     """
     Initialize MCMC carry from a checkpoint.
 

@@ -8,13 +8,15 @@ This module provides functions for:
 - Splitting history files for memory-efficient analysis
 """
 
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 from pathlib import Path
 
 from .mcmc.diagnostics import TAU_NESTED_RHAT
 
 
-def combine_batch_histories(batch_paths):
+def combine_batch_histories(batch_paths: List[str]) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
     """
     Combine multiple batch history files into a single dataset.
 
@@ -103,7 +105,7 @@ def combine_batch_histories(batch_paths):
     return combined_history, combined_iterations, combined_likelihoods, metadata
 
 
-def apply_burnin(history, iterations, likelihoods=None, min_iteration=0):
+def apply_burnin(history: np.ndarray, iterations: np.ndarray, likelihoods: Optional[np.ndarray] = None, min_iteration: int = 0) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """
     Drop samples before min_iteration (burn-in removal).
 
@@ -131,7 +133,7 @@ def apply_burnin(history, iterations, likelihoods=None, min_iteration=0):
     return filtered_history, filtered_iterations, filtered_likelihoods
 
 
-def compute_rhat_from_history(history, K, M, n_temperatures=1):
+def compute_rhat_from_history(history: np.ndarray, K: int, M: int, n_temperatures: int = 1) -> np.ndarray:
     """
     Compute nested R-hat on combined/filtered history (CPU version).
 
@@ -227,7 +229,7 @@ def split_history_by_subject(
     params_per_subject: int = 13,
     hyper_first: bool = False,
     verbose: bool = True,
-):
+) -> Dict[str, Any]:
     """
     Split a full history file into per-subject files.
 
@@ -367,7 +369,7 @@ def postprocess_all_histories(
     params_per_subject: int = 13,
     hyper_first: bool = False,
     verbose: bool = True,
-):
+) -> Dict[str, Any]:
     """
     Post-process all history files for a model, splitting into per-subject files.
 

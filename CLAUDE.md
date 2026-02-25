@@ -290,12 +290,12 @@ All 13 proposals refactored to use these helpers. Saves ~5-15 lines per proposal
 - Added explanatory comments to `COV_NUGGET` (proposals) and `NUGGET` (scan.py) explaining why they differ (1e-6 vs 1e-5)
 - Promoted `TAU_NESTED_RHAT` to module level in `diagnostics.py`, imported in `history_processing.py` instead of duplicating
 
-#### 14. Type Annotations on Public Functions
+#### 14. ~~Type Annotations on Public Functions~~ (FIXED)
 
-**Status**: Open. Several exported public functions lack parameter/return type hints:
+**Status**: Fixed. Added type annotations to 20 public functions across 4 files:
 - `src/bamcmc/checkpoint_io.py`: `save_checkpoint()`, `load_checkpoint()`, `initialize_from_checkpoint()`
-- `src/bamcmc/history_processing.py`: `combine_batch_histories()`, `apply_burnin()`, `compute_rhat_from_history()`
-- `src/bamcmc/reset_utils.py`: `generate_reset_states()`, `generate_reset_vector()`, `select_diverse_states()`, etc.
+- `src/bamcmc/history_processing.py`: `combine_batch_histories()`, `apply_burnin()`, `compute_rhat_from_history()`, `split_history_by_subject()`, `postprocess_all_histories()`
+- `src/bamcmc/reset_utils.py`: all 9 public/private functions
 - `src/bamcmc/error_handling.py`: `validate_mcmc_config()`, `diagnose_sampler_issues()`, `print_diagnostics()`
 
 #### 15. Test Coverage for Benchmark and Hash Systems
@@ -343,7 +343,7 @@ Major files: `diagnostics.py` (23), `single_run.py` (24), `posterior_benchmark.p
 | ~~High~~ | ~~Test tempering & coupled transform~~ | test_tempering_sampling.py | **FIXED** |
 | ~~Medium~~ | ~~Proposal code duplication~~ | proposals/*.py, common.py | **FIXED** |
 | ~~Medium~~ | ~~Inconsistent epsilon/nugget constants~~ | scan.py, proposals/common.py | **FIXED** |
-| Medium | Type annotations on public API | checkpoint_io.py, history_processing.py, etc. | Open |
+| ~~Medium~~ | ~~Type annotations on public API~~ | checkpoint_io.py, history_processing.py, etc. | **FIXED** |
 | Medium | Test benchmark/hash systems | posterior_benchmark.py, posterior_hash.py | Open |
 | Low | Large functions (200+ lines) | backend.py, single_run.py, config.py | Open |
 | Low | Logging vs print statements | Multiple files (127+ prints) | Open |

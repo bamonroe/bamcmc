@@ -4,10 +4,12 @@ Error Handling and Validation Utilities for MCMC Backend
 This module provides validation functions and diagnostic tools for MCMC sampling.
 """
 
+from typing import Any, Dict
+
 import numpy as np
 
 
-def validate_mcmc_config(mcmc_config):
+def validate_mcmc_config(mcmc_config: Dict[str, Any]) -> None:
     """
     Validates that MCMC configuration is sensible.
 
@@ -73,7 +75,7 @@ def validate_mcmc_config(mcmc_config):
         raise ValueError("Invalid MCMC configuration:\n  " + "\n  ".join(errors))
 
 
-def diagnose_sampler_issues(history, mcmc_config, diagnostics):
+def diagnose_sampler_issues(history: np.ndarray, mcmc_config: Dict[str, Any], diagnostics: Dict[str, Any]) -> Dict[str, Any]:
     """
     Analyzes MCMC history to identify common issues.
 
@@ -113,7 +115,7 @@ def diagnose_sampler_issues(history, mcmc_config, diagnostics):
     return diagnostics
 
 
-def print_diagnostics(diagnostics):
+def print_diagnostics(diagnostics: Dict[str, Any]) -> None:
     """Pretty-print diagnostics from diagnose_sampler_issues."""
     if diagnostics['issues']:
         print("\n[ERROR] ISSUES:")
