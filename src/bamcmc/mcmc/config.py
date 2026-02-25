@@ -113,6 +113,159 @@ def validate_mcmc_inputs(config: Dict[str, Any], data: Dict[str, Any], specs: Li
     return True
 
 
+def _build_user_config(mcmc_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract and validate user configuration from raw mcmc_config."""
+    mcmc_config = clean_config(mcmc_config)
+
+    use_double = mcmc_config.get('use_double', True)
+    posterior_id = mcmc_config.get('posterior_id')
+    rng_seed = mcmc_config.get('rng_seed', 42)
+
+    num_chains_a = mcmc_config.get('num_chains_a')
+    num_chains_b = mcmc_config.get('num_chains_b')
+    thin_iteration = mcmc_config.get('thin_iteration', 1)
+    num_collect = mcmc_config.get('num_collect', 0)
+    burn_iter = mcmc_config.get('burn_iter', 0)
+    save_likelihoods = mcmc_config.get('save_likelihoods', False)
+
+    num_chains = num_chains_a + num_chains_b
+    num_iterations = thin_iteration * num_collect
+
+    user_config = {
+        'posterior_id': posterior_id,
+        'use_double': use_double,
+        'rng_seed': rng_seed,
+        'num_chains_a': num_chains_a,
+        'num_chains_b': num_chains_b,
+        'thin_iteration': thin_iteration,
+        'num_collect': num_collect,
+        'burn_iter': burn_iter,
+        'save_likelihoods': save_likelihoods,
+        'num_chains': num_chains,
+        'num_iterations': num_iterations,
+    }
+
+    # Copy over optional user config items
+    for key in ('num_superchains', 'benchmark', 'n_subjects'):
+        if key in mcmc_config:
+            user_config[key] = mcmc_config[key]
+
+    # Parallel tempering configuration
+    user_config['n_temperatures'] = mcmc_config.get('n_temperatures', 1)
+    user_config['beta_min'] = mcmc_config.get('beta_min', 0.1)
+    user_config['swap_every'] = mcmc_config.get('swap_every', 1)
+    user_config['per_temp_proposals'] = mcmc_config.get('per_temp_proposals', True)
+    user_config['use_deo'] = mcmc_config.get('use_deo', True)
+
+    # Chunk size configuration
+    chunk_size = mcmc_config.get('chunk_size', 100)
+    if not (1 <= chunk_size <= 10000):
+        raise ValueError(f"chunk_size must be between 1 and 10000, got {chunk_size}")
+    user_config['chunk_size'] = chunk_size
+
+    return user_config
+
+
+def _setup_runtime_context(
+    use_double: bool, rng_seed: int, data: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Configure JAX precision, generate RNG keys, and convert data arrays."""
+    if use_double:
+        jax.config.update("jax_enable_x64", True)
+        jnp_float_dtype = jnp.float64
+        jnp_int_dtype = jnp.int64
+    else:
+        jax.config.update("jax_enable_x64", False)
+        jnp_float_dtype = jnp.float32
+        jnp_int_dtype = jnp.int32
+
+    master_key, init_key = gen_rng_keys(rng_seed)
+
+    data_jax = {
+        "static": data["static"],
+        "int": tuple(jnp.asarray(i, dtype=jnp_int_dtype) for i in data["int"]),
+        "float": tuple(jnp.asarray(i, dtype=jnp_float_dtype) for i in data["float"]),
+    }
+
+    return {
+        'jnp_float_dtype': jnp_float_dtype,
+        'jnp_int_dtype': jnp_int_dtype,
+        'master_key': master_key,
+        'init_key': init_key,
+        'data': data_jax,
+    }
+
+
+def _setup_posterior_functions(
+    posterior_id: str, data_jax: Dict, data: Dict, user_config: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Look up posterior from registry and bind data to its functions."""
+    model_config = get_posterior(posterior_id)
+    log_posterior_fn = partial(model_config['log_posterior'], data=data_jax)
+    direct_sampler_fn = partial(model_config['direct_sampler'], data=data_jax)
+
+    coupled_transform_fn = None
+    if model_config.get('coupled_transform_dispatch'):
+        coupled_transform_fn = partial(
+            model_config['coupled_transform_dispatch'], data=data_jax
+        )
+
+    init_vec_fn = model_config.get('initial_vector')
+    if not init_vec_fn:
+        raise ValueError(f"No 'initial_vector' function defined for {posterior_id}")
+    initial_vector_fn = partial(init_vec_fn, data=data)
+
+    gq_fn = None
+    num_gq = 0
+    if model_config.get('generated_quantities'):
+        gq_fn = partial(model_config['generated_quantities'], data=data_jax)
+        num_gq = model_config['get_num_gq'](user_config, data)
+
+    return {
+        'model_config': model_config,
+        'log_posterior_fn': log_posterior_fn,
+        'direct_sampler_fn': direct_sampler_fn,
+        'coupled_transform_fn': coupled_transform_fn,
+        'initial_vector_fn': initial_vector_fn,
+        'generated_quantities_fn': gq_fn,
+        'num_gq': num_gq,
+    }
+
+
+def _process_block_specs(
+    posterior_id: str,
+    model_config: Dict,
+    user_config: Dict[str, Any],
+    data: Dict[str, Any],
+    coupled_transform_fn,
+) -> Tuple[list, BlockArrays, List[int]]:
+    """Validate block specs, build BlockArrays, and identify discrete params."""
+    raw_batch_specs = model_config['batch_type'](user_config, data)
+
+    if not isinstance(raw_batch_specs[0], BlockSpec):
+        raise TypeError(f"Posterior '{posterior_id}' must return BlockSpec objects.")
+
+    validate_block_specs(raw_batch_specs, posterior_id)
+
+    # Validate COUPLED_TRANSFORM blocks have required dispatch function
+    has_coupled_transform_blocks = any(
+        spec.sampler_type == SamplerType.COUPLED_TRANSFORM and
+        spec.coupled_indices_fn is None
+        for spec in raw_batch_specs
+    )
+    if has_coupled_transform_blocks and coupled_transform_fn is None:
+        raise ValueError(
+            f"Posterior '{posterior_id}' has COUPLED_TRANSFORM blocks without per-block "
+            f"callbacks, but no 'coupled_transform_dispatch' function is registered. "
+            f"Either add per-block callbacks to BlockSpec or register coupled_transform_dispatch."
+        )
+
+    block_arrays = build_block_arrays(raw_batch_specs)
+    discrete_param_indices = get_discrete_param_indices(raw_batch_specs)
+
+    return raw_batch_specs, block_arrays, discrete_param_indices
+
+
 def configure_mcmc_system(
     mcmc_config: Dict[str, Any],
     data: Dict[str, Any]
@@ -133,180 +286,56 @@ def configure_mcmc_system(
         runtime_ctx: Dict with JAX keys, dtypes, converted data
         model_context: Dict with log_posterior_fn, blocks, run_params, etc.
     """
-    mcmc_config = clean_config(mcmc_config)
-
-    # Extract user-provided values (all lowercase)
-    use_double = mcmc_config.get('use_double', True)
-    posterior_id = mcmc_config.get('posterior_id')
-    rng_seed = mcmc_config.get('rng_seed', 42)
-
-    num_chains_a = mcmc_config.get('num_chains_a')
-    num_chains_b = mcmc_config.get('num_chains_b')
-    thin_iteration = mcmc_config.get('thin_iteration', 1)
-    num_collect = mcmc_config.get('num_collect', 0)
-    burn_iter = mcmc_config.get('burn_iter', 0)
-    save_likelihoods = mcmc_config.get('save_likelihoods', False)
-
-    # Compute derived values (as plain Python ints)
-    num_chains = num_chains_a + num_chains_b
-    num_iterations = thin_iteration * num_collect
-
-    # Build user_config with user values + derived ints (all lowercase)
-    user_config = {
-        'posterior_id': posterior_id,
-        'use_double': use_double,
-        'rng_seed': rng_seed,
-        'num_chains_a': num_chains_a,
-        'num_chains_b': num_chains_b,
-        'thin_iteration': thin_iteration,
-        'num_collect': num_collect,
-        'burn_iter': burn_iter,
-        'save_likelihoods': save_likelihoods,
-        # Derived values
-        'num_chains': num_chains,
-        'num_iterations': num_iterations,
-        # These will be set later: num_params, num_superchains, subchains_per_super
-    }
-
-    # Copy over optional user config items
-    if 'num_superchains' in mcmc_config:
-        user_config['num_superchains'] = mcmc_config['num_superchains']
-    if 'benchmark' in mcmc_config:
-        user_config['benchmark'] = mcmc_config['benchmark']
-    if 'n_subjects' in mcmc_config:
-        user_config['n_subjects'] = mcmc_config['n_subjects']
-
-    # Parallel tempering configuration
-    n_temperatures = mcmc_config.get('n_temperatures', 1)
-    beta_min = mcmc_config.get('beta_min', 0.1)
-    swap_every = mcmc_config.get('swap_every', 1)
-    per_temp_proposals = mcmc_config.get('per_temp_proposals', True)
-    use_deo = mcmc_config.get('use_deo', True)  # Use DEO scheme (default True)
-    user_config['n_temperatures'] = n_temperatures
-    user_config['beta_min'] = beta_min
-    user_config['swap_every'] = swap_every
-    user_config['per_temp_proposals'] = per_temp_proposals
-    user_config['use_deo'] = use_deo
-
-    # Chunk size configuration (affects compilation time/memory vs runtime overhead)
-    chunk_size = mcmc_config.get('chunk_size', 100)
-    if not (1 <= chunk_size <= 10000):
-        raise ValueError(f"chunk_size must be between 1 and 10000, got {chunk_size}")
-    user_config['chunk_size'] = chunk_size
-
-    # Configure JAX precision
-    if use_double:
-        jax.config.update("jax_enable_x64", True)
-        jnp_float_dtype = jnp.float64
-        jnp_int_dtype = jnp.int64
-    else:
-        jax.config.update("jax_enable_x64", False)
-        jnp_float_dtype = jnp.float32
-        jnp_int_dtype = jnp.int32
-
-    # Generate RNG keys
-    master_key, init_key = gen_rng_keys(rng_seed)
-
-    # Convert data arrays to JAX
-    data_jax = {
-        "static": data["static"],
-        "int": tuple(jnp.asarray(i, dtype=jnp_int_dtype) for i in data["int"]),
-        "float": tuple(jnp.asarray(i, dtype=jnp_float_dtype) for i in data["float"]),
-    }
-
-    # Build runtime context (JAX-dependent, not serializable)
-    runtime_ctx = {
-        'jnp_float_dtype': jnp_float_dtype,
-        'jnp_int_dtype': jnp_int_dtype,
-        'master_key': master_key,
-        'init_key': init_key,
-        'data': data_jax,
-    }
-
-    # Get posterior functions
-    model_config = get_posterior(posterior_id)
-    log_posterior_fn = partial(model_config['log_posterior'], data=data_jax)
-    direct_sampler_fn = partial(model_config['direct_sampler'], data=data_jax)
-
-    # Get coupled transform dispatch if defined (for COUPLED_TRANSFORM blocks)
-    coupled_transform_fn = None
-    if model_config.get('coupled_transform_dispatch'):
-        coupled_transform_fn = partial(
-            model_config['coupled_transform_dispatch'], data=data_jax
-        )
-
-    init_vec_fn = model_config.get('initial_vector')
-    if init_vec_fn:
-        initial_vector_fn = partial(init_vec_fn, data=data)  # Use original data for init
-    else:
-        raise ValueError(f"No 'initial_vector' function defined for {posterior_id}")
-
-    gq_fn = None
-    num_gq = 0
-    if model_config.get('generated_quantities'):
-        gq_fn = partial(model_config['generated_quantities'], data=data_jax)
-        num_gq = model_config['get_num_gq'](user_config, data)
-
-    raw_batch_specs = model_config['batch_type'](user_config, data)
-
-    if not isinstance(raw_batch_specs[0], BlockSpec):
-        raise TypeError(f"Posterior '{posterior_id}' must return BlockSpec objects.")
-
-    validate_block_specs(raw_batch_specs, posterior_id)
-
-    # Validate COUPLED_TRANSFORM blocks have required dispatch function
-    has_coupled_transform_blocks = any(
-        spec.sampler_type == SamplerType.COUPLED_TRANSFORM and
-        spec.coupled_indices_fn is None  # No per-block callbacks
-        for spec in raw_batch_specs
+    user_config = _build_user_config(mcmc_config)
+    runtime_ctx = _setup_runtime_context(
+        user_config['use_double'], user_config['rng_seed'], data
     )
-    if has_coupled_transform_blocks and coupled_transform_fn is None:
-        raise ValueError(
-            f"Posterior '{posterior_id}' has COUPLED_TRANSFORM blocks without per-block "
-            f"callbacks, but no 'coupled_transform_dispatch' function is registered. "
-            f"Either add per-block callbacks to BlockSpec or register coupled_transform_dispatch."
-        )
 
-    # Build unified BlockArrays structure
-    block_arrays = build_block_arrays(raw_batch_specs)
+    posterior_id = user_config['posterior_id']
+    funcs = _setup_posterior_functions(
+        posterior_id, runtime_ctx['data'], data, user_config
+    )
 
-    # Identify discrete parameters (excluded from R-hat calculations)
-    discrete_param_indices = get_discrete_param_indices(raw_batch_specs)
+    raw_batch_specs, block_arrays, discrete_param_indices = _process_block_specs(
+        posterior_id, funcs['model_config'], user_config, data,
+        funcs['coupled_transform_fn'],
+    )
+
     user_config['discrete_param_indices'] = discrete_param_indices
     if discrete_param_indices:
         logger.info(f"Discrete parameters: {len(discrete_param_indices)} (excluded from R-hat)")
 
-    # Index process: save ALL chains (users filter to beta=1 post-hoc via temp_history)
+    num_chains = user_config['num_chains']
+    n_temperatures = user_config['n_temperatures']
     n_chains_to_save = num_chains
     user_config['n_chains_to_save'] = n_chains_to_save
     if n_temperatures > 1:
         logger.info(f"Index process: saving all {num_chains} chains with temperature traces")
 
-    # Create RunParams as frozen dataclass for JAX static argument compatibility
     run_params = RunParams(
-        BURN_ITER=burn_iter,
-        NUM_COLLECT=num_collect,
-        THIN_ITERATION=thin_iteration,
-        NUM_GQ=num_gq,
-        START_ITERATION=0,  # Set to checkpoint iteration when resuming
-        SAVE_LIKELIHOODS=save_likelihoods,
+        BURN_ITER=user_config['burn_iter'],
+        NUM_COLLECT=user_config['num_collect'],
+        THIN_ITERATION=user_config['thin_iteration'],
+        NUM_GQ=funcs['num_gq'],
+        START_ITERATION=0,
+        SAVE_LIKELIHOODS=user_config['save_likelihoods'],
         N_CHAINS_TO_SAVE=n_chains_to_save,
-        CHUNK_SIZE=chunk_size,
-        PER_TEMP_PROPOSALS=per_temp_proposals,
+        CHUNK_SIZE=user_config['chunk_size'],
+        PER_TEMP_PROPOSALS=user_config['per_temp_proposals'],
         N_TEMPERATURES=n_temperatures,
-        USE_DEO=use_deo,
+        USE_DEO=user_config['use_deo'],
     )
 
     model_context = {
-        'log_posterior_fn': log_posterior_fn,
-        'direct_sampler_fn': direct_sampler_fn,
-        'coupled_transform_fn': coupled_transform_fn,  # For COUPLED_TRANSFORM blocks
-        'initial_vector_fn': initial_vector_fn,
-        'generated_quantities_fn': gq_fn,
+        'log_posterior_fn': funcs['log_posterior_fn'],
+        'direct_sampler_fn': funcs['direct_sampler_fn'],
+        'coupled_transform_fn': funcs['coupled_transform_fn'],
+        'initial_vector_fn': funcs['initial_vector_fn'],
+        'generated_quantities_fn': funcs['generated_quantities_fn'],
         'block_arrays': block_arrays,
-        'block_specs': raw_batch_specs,  # Keep for labels/debugging
+        'block_specs': raw_batch_specs,
         'run_params': run_params,
-        'model_config': model_config,  # For posterior hash computation
+        'model_config': funcs['model_config'],
     }
 
     return user_config, runtime_ctx, model_context

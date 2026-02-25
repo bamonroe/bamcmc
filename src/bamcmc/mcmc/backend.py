@@ -63,6 +63,91 @@ __all__ = [
 ]
 
 
+def _resolve_run_schedule(mcmc_config: Dict[str, Any]) -> List[tuple]:
+    """Parse run schedule from mcmc_config, returning [(mode, count), ...] list."""
+    run_schedule = mcmc_config.get('run_schedule', None)
+    reset_runs = mcmc_config.get('reset_runs', 0)
+    resume_runs = mcmc_config.get('resume_runs', 1)
+
+    if run_schedule is not None:
+        if 'reset_runs' in mcmc_config or 'resume_runs' in mcmc_config:
+            warnings.warn(
+                "Both 'run_schedule' and 'reset_runs'/'resume_runs' specified in "
+                "mcmc_config. 'reset_runs' and 'resume_runs' will be ignored in "
+                "favor of 'run_schedule'.",
+                UserWarning, stacklevel=2)
+        return run_schedule
+
+    schedule = []
+    if reset_runs > 0:
+        schedule.append(("reset", reset_runs))
+    if resume_runs > 0:
+        schedule.append(("resume", resume_runs))
+    return schedule
+
+
+def _setup_output_structure(output_dir: str, model_name: str, use_nested: bool):
+    """Create directory structure and return checkpoint/history path constructors."""
+    if use_nested:
+        paths = ensure_model_dirs(output_dir, model_name)
+        checkpoint_dir = paths['checkpoints']
+        history_dir = paths['history_full']
+
+        def checkpoint_path(num):
+            return str(checkpoint_dir / f"checkpoint_{num:03d}.npz")
+
+        def history_path(num):
+            return str(history_dir / f"history_{num:03d}.npz")
+    else:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        def checkpoint_path(num):
+            return f"{output_dir}/{model_name}_checkpoint{num}.npz"
+
+        def history_path(num):
+            return f"{output_dir}/{model_name}_history_{num:03d}.npz"
+
+    return checkpoint_path, history_path
+
+
+def _determine_run_mode(
+    scheduled_mode: str,
+    checkpoint_path_fn,
+    output_checkpoint_num: int,
+    input_checkpoint_num: int,
+    use_nested_structure: bool,
+    output_dir: str,
+    model_name: str,
+) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+    """Determine actual run mode and input/output paths.
+
+    Returns:
+        (actual_mode, resume_from, reset_from, save_initial_to)
+    """
+    input_checkpoint_file = checkpoint_path_fn(input_checkpoint_num)
+    has_input_checkpoint = Path(input_checkpoint_file).exists()
+
+    # Search for latest available checkpoint if expected one doesn't exist
+    if not has_input_checkpoint and input_checkpoint_num > 0:
+        for idx in range(input_checkpoint_num - 1, -1, -1):
+            cp = checkpoint_path_fn(idx)
+            if Path(cp).exists():
+                input_checkpoint_file = cp
+                has_input_checkpoint = True
+                logger.info(f"  Note: Using checkpoint_{idx:03d} (checkpoint_{input_checkpoint_num:03d} not found)")
+                break
+
+    save_initial_to = None
+    if not has_input_checkpoint:
+        return 'fresh', None, None, checkpoint_path_fn(0)
+    elif scheduled_mode == 'resume':
+        return 'resume', input_checkpoint_file, None, None
+    else:  # reset
+        if not use_nested_structure:
+            save_initial_to = f"{output_dir}/{model_name}_checkpoint{input_checkpoint_num}_reset.npz"
+        return 'reset', None, input_checkpoint_file, save_initial_to
+
+
 # =============================================================================
 # MULTI-RUN SAMPLING FUNCTION
 # =============================================================================
@@ -137,51 +222,15 @@ def rmcmc(
         config = {**mcmc_config, 'reset_runs': 3, 'resume_runs': 5}
         summary = rmcmc(config, data, output_dir='./output')
 
-        logger.info(f"Completed {summary['total_runs_completed']} runs")
-        logger.info(f"History files: {summary['history_files']}")
+        print(f"Completed {summary['total_runs_completed']} runs")
+        print(f"History files: {summary['history_files']}")
     """
     model_name = mcmc_config['posterior_id']
 
-    # Resolve run schedule from config
-    run_schedule = mcmc_config.get('run_schedule', None)
-    reset_runs = mcmc_config.get('reset_runs', 0)
-    resume_runs = mcmc_config.get('resume_runs', 1)
-
-    if run_schedule is not None:
-        if 'reset_runs' in mcmc_config or 'resume_runs' in mcmc_config:
-            warnings.warn(
-                "Both 'run_schedule' and 'reset_runs'/'resume_runs' specified in "
-                "mcmc_config. 'reset_runs' and 'resume_runs' will be ignored in "
-                "favor of 'run_schedule'.",
-                UserWarning, stacklevel=2)
-    else:
-        run_schedule = []
-        if reset_runs > 0:
-            run_schedule.append(("reset", reset_runs))
-        if resume_runs > 0:
-            run_schedule.append(("resume", resume_runs))
-
-    # Set up directory structure and path constructors
-    if use_nested_structure:
-        # Create nested directories: {output_dir}/{model}/checkpoints/, history/full/
-        paths = ensure_model_dirs(output_dir, model_name)
-        checkpoint_dir = paths['checkpoints']
-        history_dir = paths['history_full']
-
-        def checkpoint_path(num):
-            return str(checkpoint_dir / f"checkpoint_{num:03d}.npz")
-
-        def history_path(num):
-            return str(history_dir / f"history_{num:03d}.npz")
-    else:
-        # Legacy flat structure
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-        def checkpoint_path(num):
-            return f"{output_dir}/{model_name}_checkpoint{num}.npz"
-
-        def history_path(num):
-            return f"{output_dir}/{model_name}_history_{num:03d}.npz"
+    run_schedule = _resolve_run_schedule(mcmc_config)
+    checkpoint_path, history_path = _setup_output_structure(
+        output_dir, model_name, use_nested_structure
+    )
 
     # Scan for existing checkpoints
     scan = scan_checkpoints(output_dir, model_name)
@@ -193,7 +242,7 @@ def rmcmc(
     else:
         logger.info(f"No existing checkpoints found for {model_name}")
 
-    # Expand run schedule into list of (run_index, mode) pairs
+    # Expand run schedule into list of modes
     run_list = []
     for mode, count in run_schedule:
         if mode not in ('reset', 'resume'):
@@ -252,43 +301,12 @@ def rmcmc(
             })
             continue
 
-        # Determine input checkpoint (what to resume/reset from)
+        # Determine input checkpoint and run mode
         input_checkpoint_num = output_checkpoint_num - 1  # checkpoint_0 for first run
-        input_checkpoint_file = checkpoint_path(input_checkpoint_num)
-        has_input_checkpoint = Path(input_checkpoint_file).exists()
-
-        # If input checkpoint doesn't exist, search for latest available
-        if not has_input_checkpoint and input_checkpoint_num > 0:
-            for idx in range(input_checkpoint_num - 1, -1, -1):
-                cp = checkpoint_path(idx)
-                if Path(cp).exists():
-                    input_checkpoint_file = cp
-                    has_input_checkpoint = True
-                    logger.info(f"  Note: Using checkpoint_{idx:03d} (checkpoint_{input_checkpoint_num:03d} not found)")
-                    break
-
-        # Determine mode and whether we need to save initial state
-        save_initial_to = None
-        if not has_input_checkpoint:
-            actual_mode = 'fresh'
-            resume_from = None
-            reset_from = None
-            # Save initial state as checkpoint_000
-            save_initial_to = checkpoint_path(0)
-        elif scheduled_mode == 'resume':
-            actual_mode = 'resume'
-            resume_from = input_checkpoint_file
-            reset_from = None
-        else:  # reset
-            actual_mode = 'reset'
-            resume_from = None
-            reset_from = input_checkpoint_file
-            # Save initial (reset) state before sampling
-            # For nested structure, just overwrite the checkpoint; for flat, add _reset suffix
-            if use_nested_structure:
-                save_initial_to = None  # Don't save reset state separately in nested mode
-            else:
-                save_initial_to = f"{output_dir}/{model_name}_checkpoint{input_checkpoint_num}_reset.npz"
+        actual_mode, resume_from, reset_from, save_initial_to = _determine_run_mode(
+            scheduled_mode, checkpoint_path, output_checkpoint_num,
+            input_checkpoint_num, use_nested_structure, output_dir, model_name,
+        )
 
         logger.info(f"\n{'='*60}")
         logger.info(f"Sampling run {i + 1}/{total_runs} (overall #{sampling_run_num + 1}, mode={actual_mode})")

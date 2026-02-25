@@ -484,6 +484,44 @@ def _build_results(
     }
 
 
+def _handle_benchmarking(
+    cached_benchmark, compiled_chunk, initial_carry, run_params,
+    user_config, benchmark_mgr, posterior_hash, posterior_id, compile_time,
+) -> Optional[float]:
+    """Resolve benchmark timing: use cached, run fresh, or skip. Returns avg_time or None."""
+    benchmark_iters = user_config.get('benchmark', 0)
+
+    if cached_benchmark is not None:
+        cached_results = cached_benchmark.get('results', {})
+        avg_time = cached_results.get('iteration_time_s')
+        if avg_time:
+            logger.info(f"\n--- Using Cached Benchmark (hash: {posterior_hash[:8]}...) ---")
+            logger.info(f"  Per-iteration: {avg_time:.4f}s (from cache)")
+            cached_git = cached_benchmark.get('git', {})
+            if cached_git:
+                logger.info(f"  Cached from: {cached_git.get('branch', '?')}@{cached_git.get('commit', '?')}")
+        return avg_time
+
+    if benchmark_iters > 0:
+        bench_results = benchmark_mcmc_sampler(
+            compiled_chunk, initial_carry, benchmark_iters,
+            chunk_size=run_params.CHUNK_SIZE
+        )
+        avg_time = bench_results['avg_time']
+        benchmark_mgr.save_benchmark(
+            posterior_hash=posterior_hash,
+            posterior_id=posterior_id,
+            num_chains=user_config['num_chains'],
+            fresh_compile_time=compile_time,
+            iteration_time=avg_time,
+            benchmark_iterations=benchmark_iters,
+        )
+        logger.info(f"  Benchmark saved (hash: {posterior_hash[:8]}...)")
+        return avg_time
+
+    return None
+
+
 # =============================================================================
 # SINGLE-RUN SAMPLING FUNCTION
 # =============================================================================
@@ -601,36 +639,10 @@ def rmcmc_single(
     )
 
     # --- 5. HANDLE BENCHMARKING ---
-    benchmark_iters = user_config.get('benchmark', 0)
-    avg_time = None
-
-    if cached_benchmark is not None:
-        # Use cached benchmark values
-        cached_results = cached_benchmark.get('results', {})
-        avg_time = cached_results.get('iteration_time_s')
-        if avg_time:
-            logger.info(f"\n--- Using Cached Benchmark (hash: {posterior_hash[:8]}...) ---")
-            logger.info(f"  Per-iteration: {avg_time:.4f}s (from cache)")
-            cached_git = cached_benchmark.get('git', {})
-            if cached_git:
-                logger.info(f"  Cached from: {cached_git.get('branch', '?')}@{cached_git.get('commit', '?')}")
-    elif benchmark_iters > 0:
-        # Run benchmark and save results
-        bench_results = benchmark_mcmc_sampler(
-            compiled_chunk, initial_carry, benchmark_iters,
-            chunk_size=run_params.CHUNK_SIZE
-        )
-        avg_time = bench_results['avg_time']
-
-        benchmark_mgr.save_benchmark(
-            posterior_hash=posterior_hash,
-            posterior_id=posterior_id,
-            num_chains=user_config['num_chains'],
-            fresh_compile_time=compile_time,
-            iteration_time=avg_time,
-            benchmark_iterations=benchmark_iters,
-        )
-        logger.info(f"  Benchmark saved (hash: {posterior_hash[:8]}...)")
+    avg_time = _handle_benchmarking(
+        cached_benchmark, compiled_chunk, initial_carry, run_params,
+        user_config, benchmark_mgr, posterior_hash, posterior_id, compile_time,
+    )
 
     # --- 6. RUN MCMC ITERATIONS ---
     total_iterations = run_params.BURN_ITER + user_config["num_iterations"]

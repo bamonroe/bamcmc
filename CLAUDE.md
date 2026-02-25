@@ -307,24 +307,20 @@ All 13 proposals refactored to use these helpers. Saves ~5-15 lines per proposal
 
 ### Lower Priority
 
-#### 16. Large Functions
+#### 16. ~~Large Functions~~ (FIXED)
 
-**Status**: Open. Several functions exceed 200 lines and could benefit from phase extraction:
-- `rmcmc()` in `src/bamcmc/mcmc/backend.py` — 294 lines
-- `rmcmc_single()` in `src/bamcmc/mcmc/single_run.py` — 244 lines
-- `configure_mcmc_system()` in `src/bamcmc/mcmc/config.py` — 197 lines
+**Status**: Fixed. Decomposed three large functions by extracting helpers:
+- `configure_mcmc_system()` in `config.py`: Extracted `_build_user_config()`, `_setup_runtime_context()`, `_setup_posterior_functions()`, `_process_block_specs()`
+- `rmcmc_single()` in `single_run.py`: Extracted `_handle_benchmarking()`
+- `rmcmc()` in `backend.py`: Extracted `_resolve_run_schedule()`, `_setup_output_structure()`, `_determine_run_mode()`
 
-Extracting phases (validation, initialization, run-loop, diagnostics) would make them easier to test and reason about.
+#### 17. ~~Logging vs Print Statements~~ (FIXED)
 
-#### 17. Logging vs Print Statements
+**Status**: Fixed. Replaced all `print()` calls across 14 source files with Python's `logging` module (`logging.getLogger('bamcmc')`). Logging setup in `__init__.py` with `StreamHandler` at `INFO` level preserves default behavior. Users can control verbosity via `logging.getLogger('bamcmc').setLevel(...)`.
 
-**Status**: Open. 127+ `print()` calls used for status output across the codebase. Switching to Python's `logging` module would let users control verbosity without code changes (e.g., silence output in library usage, enable debug in troubleshooting).
+#### 18. ~~Hardcoded Model-Specific Indices in reset_utils~~ (FIXED)
 
-Major files: `diagnostics.py` (23), `single_run.py` (24), `posterior_benchmark.py` (25), `backend.py` (18), `history_processing.py` (18).
-
-#### 18. Hardcoded Model-Specific Indices in reset_utils
-
-**Status**: Open. `_get_legacy_special_indices()` in `src/bamcmc/reset_utils.py` (lines 85-176) has hardcoded block sizes and parameter offsets for specific mixture models (e.g., `subject_block_size = 20` for mixture_3model_bhm). This couples a utility module to specific posteriors — ideally posteriors would declare their own discrete indices via the registry.
+**Status**: Fixed. Added `DeprecationWarning` in `get_discrete_param_indices()` when falling back to `_get_legacy_special_indices()`, guiding users to register `get_discrete_param_indices` in the posterior config instead.
 
 ### Summary Table
 
@@ -345,6 +341,6 @@ Major files: `diagnostics.py` (23), `single_run.py` (24), `posterior_benchmark.p
 | ~~Medium~~ | ~~Inconsistent epsilon/nugget constants~~ | scan.py, proposals/common.py | **FIXED** |
 | ~~Medium~~ | ~~Type annotations on public API~~ | checkpoint_io.py, history_processing.py, etc. | **FIXED** |
 | ~~Medium~~ | ~~Test benchmark/hash systems~~ | test_benchmark_hash.py | **FIXED** |
-| Low | Large functions (200+ lines) | backend.py, single_run.py, config.py | Open |
-| Low | Logging vs print statements | Multiple files (127+ prints) | Open |
-| Low | Hardcoded model indices | reset_utils.py | Open |
+| ~~Low~~ | ~~Large functions (200+ lines)~~ | backend.py, single_run.py, config.py | **FIXED** |
+| ~~Low~~ | ~~Logging vs print statements~~ | Multiple files | **FIXED** |
+| ~~Low~~ | ~~Hardcoded model indices~~ | reset_utils.py | **FIXED** |
