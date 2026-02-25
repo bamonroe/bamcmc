@@ -10,6 +10,9 @@ This module provides functions for:
 import re
 from pathlib import Path
 
+import logging
+logger = logging.getLogger('bamcmc')
+
 
 def scan_checkpoints(output_dir: str, model_name: str):
     """
@@ -200,7 +203,7 @@ def clean_model_files(output_dir: str, model_name: str, mode: str = 'all'):
                 Path(cp_path).unlink()
                 deleted_checkpoints.append(cp_path)
             except OSError as e:
-                print(f"  Warning: Could not delete {cp_path}: {e}", flush=True)
+                logger.warning(f"Could not delete {cp_path}: {e}")
 
     # Delete all histories (from full/)
     for run_idx, hist_path in scan['history_files']:
@@ -208,7 +211,7 @@ def clean_model_files(output_dir: str, model_name: str, mode: str = 'all'):
             Path(hist_path).unlink()
             deleted_histories.append(hist_path)
         except OSError as e:
-            print(f"  Warning: Could not delete {hist_path}: {e}", flush=True)
+            logger.warning(f"Could not delete {hist_path}: {e}")
 
     # For nested structure, also clean per_subject directory
     if scan.get('structure') == 'nested':
@@ -219,7 +222,7 @@ def clean_model_files(output_dir: str, model_name: str, mode: str = 'all'):
                 shutil.rmtree(per_subject_dir)
                 per_subject_dir.mkdir(parents=True, exist_ok=True)
             except OSError as e:
-                print(f"  Warning: Could not clean per_subject directory: {e}", flush=True)
+                logger.warning(f"Could not clean per_subject directory: {e}")
 
     return {
         'deleted_checkpoints': deleted_checkpoints,

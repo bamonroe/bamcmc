@@ -12,12 +12,15 @@ those modules for backwards compatibility.
 """
 
 import json
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 import jax
+
+logger = logging.getLogger('bamcmc')
 
 # Re-export hashing functions (used by single_run.py and __init__.py)
 from .posterior_hash import (
@@ -107,9 +110,9 @@ class PosteriorBenchmarkManager:
                     if benchmark.get('posterior_hash') == posterior_hash:
                         return benchmark
                     else:
-                        print(f"Warning: Hash mismatch in {path}, ignoring cached benchmark")
+                        logger.warning(f"Hash mismatch in {path}, ignoring cached benchmark")
             except (json.JSONDecodeError, IOError) as e:
-                print(f"Warning: Could not load benchmark {path}: {e}")
+                logger.warning(f"Could not load benchmark {path}: {e}")
         return None
 
     def save_benchmark(self,
@@ -220,26 +223,26 @@ class PosteriorBenchmarkManager:
         hw = benchmark.get('hardware', {})
         git = benchmark.get('git', {})
 
-        print(f"Posterior: {benchmark.get('posterior_id', 'unknown')}")
-        print(f"  Hash: {benchmark.get('posterior_hash', '?')[:12]}...")
+        logger.info(f"Posterior: {benchmark.get('posterior_id', 'unknown')}")
+        logger.info(f"  Hash: {benchmark.get('posterior_hash', '?')[:12]}...")
 
         if verbose:
-            print(f"  Version: bamcmc {benchmark.get('bamcmc_version', '?')}")
+            logger.info(f"  Version: bamcmc {benchmark.get('bamcmc_version', '?')}")
             if git:
                 dirty = " (dirty)" if git.get('dirty') else ""
-                print(f"  Git: {git.get('branch', '?')}@{git.get('commit', '?')}{dirty}")
+                logger.info(f"  Git: {git.get('branch', '?')}@{git.get('commit', '?')}{dirty}")
             if hw.get('gpu_name'):
-                print(f"  GPU: {hw['gpu_name']}")
+                logger.info(f"  GPU: {hw['gpu_name']}")
 
-        print(f"  Compile (fresh): {results.get('fresh_compile_time_s', 0):.2f}s")
+        logger.info(f"  Compile (fresh): {results.get('fresh_compile_time_s', 0):.2f}s")
         if results.get('cached_compile_time_s'):
-            print(f"  Compile (cached): {results['cached_compile_time_s']:.2f}s")
-        print(f"  Per-iteration: {results.get('iteration_time_s', 0):.4f}s")
-        print(f"  Chains: {config.get('num_chains', '?')}")
+            logger.info(f"  Compile (cached): {results['cached_compile_time_s']:.2f}s")
+        logger.info(f"  Per-iteration: {results.get('iteration_time_s', 0):.4f}s")
+        logger.info(f"  Chains: {config.get('num_chains', '?')}")
 
         if verbose:
-            print(f"  Benchmark iters: {config.get('benchmark_iterations', '?')}")
-            print(f"  Timestamp: {benchmark.get('timestamp', '?')}")
+            logger.info(f"  Benchmark iters: {config.get('benchmark_iterations', '?')}")
+            logger.info(f"  Timestamp: {benchmark.get('timestamp', '?')}")
 
 
     def compare_benchmark(self,
@@ -300,61 +303,61 @@ class PosteriorBenchmarkManager:
 
     def print_comparison(self, comparison: Dict[str, Any], posterior_id: str = None):
         """Print a human-readable benchmark comparison."""
-        print("\n" + "=" * 60)
-        print("BENCHMARK COMPARISON")
-        print("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info("BENCHMARK COMPARISON")
+        logger.info("=" * 60)
 
         if posterior_id:
-            print(f"Posterior: {posterior_id}")
+            logger.info(f"Posterior: {posterior_id}")
 
         current_git = comparison.get('current_git', {})
         cached_git = comparison.get('cached_git', {})
 
         if current_git:
-            print(f"Current:  {current_git.get('branch', '?')}@{current_git.get('commit', '?')}")
+            logger.info(f"Current:  {current_git.get('branch', '?')}@{current_git.get('commit', '?')}")
         if cached_git:
-            print(f"Cached:   {cached_git.get('branch', '?')}@{cached_git.get('commit', '?')}")
+            logger.info(f"Cached:   {cached_git.get('branch', '?')}@{cached_git.get('commit', '?')}")
 
-        print("-" * 60)
+        logger.info("-" * 60)
 
         # Iteration time comparison
         new_iter = comparison['new_iteration_time']
         cached_iter = comparison['cached_iteration_time']
 
-        print(f"Iteration Time:")
-        print(f"  New:    {new_iter:.6f} s")
+        logger.info(f"Iteration Time:")
+        logger.info(f"  New:    {new_iter:.6f} s")
         if cached_iter:
-            print(f"  Cached: {cached_iter:.6f} s")
+            logger.info(f"  Cached: {cached_iter:.6f} s")
             delta = comparison['iteration_delta']
             pct = comparison['iteration_pct_change']
             sign = "+" if delta > 0 else ""
             status = "SLOWER" if delta > 0 else "FASTER" if delta < 0 else "SAME"
             color_status = f"({status})"
-            print(f"  Delta:  {sign}{delta:.6f} s ({sign}{pct:.1f}%) {color_status}")
+            logger.info(f"  Delta:  {sign}{delta:.6f} s ({sign}{pct:.1f}%) {color_status}")
         else:
-            print(f"  Cached: (no previous benchmark)")
+            logger.info(f"  Cached: (no previous benchmark)")
 
         # Compile time comparison
         new_compile = comparison['new_compile_time']
         cached_compile = comparison['cached_compile_time']
 
-        print(f"\nCompile Time:")
-        print(f"  New:    {new_compile:.4f} s")
+        logger.info(f"\nCompile Time:")
+        logger.info(f"  New:    {new_compile:.4f} s")
         if cached_compile:
-            print(f"  Cached: {cached_compile:.4f} s")
+            logger.info(f"  Cached: {cached_compile:.4f} s")
             delta = comparison['compile_delta']
             pct = comparison['compile_pct_change']
             sign = "+" if delta > 0 else ""
             status = "SLOWER" if delta > 0 else "FASTER" if delta < 0 else "SAME"
-            print(f"  Delta:  {sign}{delta:.4f} s ({sign}{pct:.1f}%) ({status})")
+            logger.info(f"  Delta:  {sign}{delta:.4f} s ({sign}{pct:.1f}%) ({status})")
         else:
-            print(f"  Cached: (no previous benchmark)")
+            logger.info(f"  Cached: (no previous benchmark)")
 
         # Total time predictions for practical iteration counts
-        print("-" * 60)
-        print("Total Time Predictions (compile + iterations):")
-        print(f"{'Iterations':<12} {'New':>12} {'Cached':>12} {'Delta':>12} {'Status':>10}")
-        print("-" * 60)
+        logger.info("-" * 60)
+        logger.info("Total Time Predictions (compile + iterations):")
+        logger.info(f"{'Iterations':<12} {'New':>12} {'Cached':>12} {'Delta':>12} {'Status':>10}")
+        logger.info("-" * 60)
 
         for n_iters in [1000, 5000, 10000]:
             new_total = new_compile + (new_iter * n_iters)
@@ -366,14 +369,14 @@ class PosteriorBenchmarkManager:
                 sign = "+" if delta > 0 else ""
                 status = "SLOWER" if delta > 0 else "FASTER" if delta < 0 else "SAME"
 
-                print(f"{n_iters:<12} {self._format_time(new_total):>12} "
+                logger.info(f"{n_iters:<12} {self._format_time(new_total):>12} "
                       f"{self._format_time(cached_total):>12} "
                       f"{sign}{pct:>+5.1f}%      {status:>10}")
             else:
-                print(f"{n_iters:<12} {self._format_time(new_total):>12} "
+                logger.info(f"{n_iters:<12} {self._format_time(new_total):>12} "
                       f"{'N/A':>12} {'N/A':>12} {'N/A':>10}")
 
-        print("=" * 60)
+        logger.info("=" * 60)
 
     def _format_time(self, seconds: float) -> str:
         """Format seconds as human-readable time string."""
@@ -455,7 +458,7 @@ def run_benchmark(
     mcmc_config.setdefault('thin_iteration', 1)
 
     # Configure system
-    print("Configuring MCMC system...")
+    logger.info("Configuring MCMC system...")
     user_config, runtime_ctx, model_ctx = configure_mcmc_system(mcmc_config, data)
 
     run_params = model_ctx['run_params']
@@ -470,10 +473,10 @@ def run_benchmark(
         runtime_ctx['data'],
         num_chains
     )
-    print(f"Posterior hash: {posterior_hash}")
+    logger.info(f"Posterior hash: {posterior_hash}")
 
     # Initialize
-    print("Generating initial vector...")
+    logger.info("Generating initial vector...")
     initial_vector_np = model_ctx['initial_vector_fn'](user_config)
 
     initial_carry, user_config = initialize_mcmc_system(
@@ -485,7 +488,7 @@ def run_benchmark(
         num_blocks=block_arrays.num_blocks
     )
 
-    print(f"JAX backend: {jax.default_backend()}")
+    logger.info(f"JAX backend: {jax.default_backend()}")
 
     # Compile kernel
     compiled_chunk, compile_time = compile_mcmc_kernel(
@@ -513,7 +516,7 @@ def run_benchmark(
         benchmark_mgr.print_comparison(comparison, posterior_id=posterior_id)
 
     if update_cache:
-        print("\nUpdating cached benchmark...")
+        logger.info("\nUpdating cached benchmark...")
         benchmark_mgr.save_benchmark(
             posterior_hash=posterior_hash,
             posterior_id=posterior_id,
@@ -522,9 +525,9 @@ def run_benchmark(
             iteration_time=iteration_time,
             benchmark_iterations=benchmark_iterations,
         )
-        print(f"Benchmark saved (hash: {posterior_hash[:8]}...)")
+        logger.info(f"Benchmark saved (hash: {posterior_hash[:8]}...)")
     elif compare:
-        print("\n(Use update_cache=True to save these results as the new baseline)")
+        logger.info("\n(Use update_cache=True to save these results as the new baseline)")
 
     return {
         'iteration_time': iteration_time,

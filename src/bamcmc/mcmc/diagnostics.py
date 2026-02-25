@@ -17,6 +17,9 @@ import numpy as np
 
 from ..batch_specs import SamplerType
 
+import logging
+logger = logging.getLogger('bamcmc')
+
 # Small regularization constant for nested R-hat threshold.
 # From Margossian et al. (2022), prevents division instability when M is large.
 TAU_NESTED_RHAT = 1e-4
@@ -127,7 +130,7 @@ def compute_and_print_rhat(
     if history_device.shape[1] <= 1:
         return None
 
-    print("\n--- Computing Unified Nested R-hat (GPU) ---")
+    logger.info("\n--- Computing Unified Nested R-hat (GPU) ---")
     rhat_start = time.perf_counter()
 
     K = user_config['num_superchains']
@@ -136,14 +139,14 @@ def compute_and_print_rhat(
     # Index process: all chains are saved, no K adjustment needed
     n_temperatures = user_config.get('n_temperatures', 1)
     if n_temperatures > 1:
-        print(f"  (Index process: R-hat on full traces, {K} superchains × {M} subchains)")
-        print(f"  Use filter_beta1_samples() with temp_history for β=1-only analysis")
+        logger.info(f"  (Index process: R-hat on full traces, {K} superchains × {M} subchains)")
+        logger.info(f"  Use filter_beta1_samples() with temp_history for β=1-only analysis")
 
     nrhat_device = compute_nested_rhat(history_device, K, M)
     nrhat_values = jax.device_get(nrhat_device)
 
     rhat_end = time.perf_counter()
-    print(f"Diagnostics complete in {rhat_end - rhat_start:.4f}s")
+    logger.info(f"Diagnostics complete in {rhat_end - rhat_start:.4f}s")
 
     # Filter out discrete parameters for statistics
     discrete_indices = user_config.get('discrete_param_indices', [])
@@ -163,20 +166,20 @@ def compute_and_print_rhat(
     n_continuous = len(continuous_rhat)
     n_discrete = len(discrete_indices)
 
-    print(f"\n--- {label} Results ({n_continuous} continuous params, {n_discrete} discrete excluded) ---")
-    print(f"  Max: {np.nanmax(continuous_rhat):.4f}")
-    print(f"  Median: {np.nanmedian(continuous_rhat):.4f}")
-    print(f"  Threshold: {threshold:.4f} (tau={TAU_NESTED_RHAT:.0e})")
+    logger.info(f"\n--- {label} Results ({n_continuous} continuous params, {n_discrete} discrete excluded) ---")
+    logger.info(f"  Max: {np.nanmax(continuous_rhat):.4f}")
+    logger.info(f"  Median: {np.nanmedian(continuous_rhat):.4f}")
+    logger.info(f"  Threshold: {threshold:.4f} (tau={TAU_NESTED_RHAT:.0e})")
 
     # Check for NaN/Inf (stuck continuous params)
     n_nan = np.sum(~np.isfinite(continuous_rhat))
     if n_nan > 0:
-        print(f"  WARNING: {n_nan} continuous params have NaN/Inf R-hat (stuck chains)")
+        logger.warning(f"{n_nan} continuous params have NaN/Inf R-hat (stuck chains)")
 
     if np.nanmax(continuous_rhat) < threshold:
-        print(f"  Converged (max < {threshold:.4f})")
+        logger.info(f"  Converged (max < {threshold:.4f})")
     else:
-        print(f"  Not Converged (max = {np.nanmax(continuous_rhat):.4f} >= {threshold:.4f})")
+        logger.info(f"  Not Converged (max = {np.nanmax(continuous_rhat):.4f} >= {threshold:.4f})")
 
     return nrhat_values
 
@@ -200,8 +203,8 @@ def print_acceptance_summary(block_specs: List, acceptance_rates_host: np.ndarra
         return
 
     mh_rates = np.array(mh_rates)
-    print(f"\n--- MH Acceptance Rates ({len(mh_rates)} blocks) ---")
-    print(f"  Mean: {np.mean(mh_rates):.1%}  Median: {np.median(mh_rates):.1%}  "
+    logger.info(f"\n--- MH Acceptance Rates ({len(mh_rates)} blocks) ---")
+    logger.info(f"  Mean: {np.mean(mh_rates):.1%}  Median: {np.median(mh_rates):.1%}  "
           f"Min: {np.min(mh_rates):.1%}  Max: {np.max(mh_rates):.1%}")
 
     # Warn about low acceptance rates
@@ -209,9 +212,9 @@ def print_acceptance_summary(block_specs: List, acceptance_rates_host: np.ndarra
     if np.any(low_rate_mask):
         low_count = np.sum(low_rate_mask)
         low_labels = [lbl for lbl, is_low in zip(mh_labels, low_rate_mask) if is_low]
-        print(f"  WARNING: {low_count} block(s) have acceptance rate < 10%")
+        logger.warning(f"{low_count} block(s) have acceptance rate < 10%")
         if low_count <= 10:
-            print(f"    Low blocks: {', '.join(low_labels)}")
+            logger.info(f"    Low blocks: {', '.join(low_labels)}")
 
 
 def print_swap_acceptance_summary(
@@ -231,8 +234,8 @@ def print_swap_acceptance_summary(
     if n_temperatures <= 1:
         return
 
-    print(f"\n--- Parallel Tempering Swap Rates ({n_temperatures} temperatures) ---")
-    print(f"  Temperature ladder: {', '.join(f'{t:.3f}' for t in temperature_ladder)}")
+    logger.info(f"\n--- Parallel Tempering Swap Rates ({n_temperatures} temperatures) ---")
+    logger.info(f"  Temperature ladder: {', '.join(f'{t:.3f}' for t in temperature_ladder)}")
 
     n_pairs = n_temperatures - 1
     swap_rates = np.zeros(n_pairs)
@@ -244,16 +247,16 @@ def print_swap_acceptance_summary(
 
         beta_i = temperature_ladder[i]
         beta_j = temperature_ladder[i + 1]
-        print(f"  Pair ({beta_i:.3f} <-> {beta_j:.3f}): "
+        logger.info(f"  Pair ({beta_i:.3f} <-> {beta_j:.3f}): "
               f"{swap_rates[i]:.1%} ({swap_accepts[i]}/{swap_attempts[i]})")
 
     if n_pairs > 0:
-        print(f"  Mean swap rate: {np.mean(swap_rates):.1%}")
+        logger.info(f"  Mean swap rate: {np.mean(swap_rates):.1%}")
 
     # Warn about low swap rates (should be 20-40% for good mixing)
     low_swap_mask = (swap_rates < 0.10) & (swap_attempts > 0)
     if np.any(low_swap_mask):
-        print(f"  WARNING: Some swap rates are < 10% - consider adjusting temperature spacing")
+        logger.warning(f"Some swap rates are < 10% - consider adjusting temperature spacing")
 
 
 # =============================================================================
@@ -302,8 +305,8 @@ def filter_beta1_samples(
     min_count = np.min(sample_counts)
 
     if min_count == 0:
-        print(f"WARNING: Some chains have 0 samples at temperature index {target_temp_idx}")
-        print(f"  Sample counts range: {np.min(sample_counts)} to {np.max(sample_counts)}")
+        logger.warning(f"Some chains have 0 samples at temperature index {target_temp_idx}")
+        logger.info(f"  Sample counts range: {np.min(sample_counts)} to {np.max(sample_counts)}")
         return None, sample_counts
 
     # Build filtered array with uniform sample count per chain
@@ -388,12 +391,12 @@ def print_round_trip_summary(
     mean_rate, per_chain_trips = compute_round_trip_rate(temp_history, n_temperatures)
     n_samples, n_chains = temp_history.shape
 
-    print(f"\n--- Index Process Round-Trip Summary ({n_temperatures} temperatures) ---")
-    print(f"  Chains: {n_chains}")
-    print(f"  Samples: {n_samples}")
-    print(f"  Total round trips: {np.sum(per_chain_trips)}")
-    print(f"  Mean trips per chain: {np.mean(per_chain_trips):.1f}")
-    print(f"  Round-trip rate: {mean_rate:.4f} trips/sample")
+    logger.info(f"\n--- Index Process Round-Trip Summary ({n_temperatures} temperatures) ---")
+    logger.info(f"  Chains: {n_chains}")
+    logger.info(f"  Samples: {n_samples}")
+    logger.info(f"  Total round trips: {np.sum(per_chain_trips)}")
+    logger.info(f"  Mean trips per chain: {np.mean(per_chain_trips):.1f}")
+    logger.info(f"  Round-trip rate: {mean_rate:.4f} trips/sample")
 
     if np.mean(per_chain_trips) < 1:
-        print(f"  WARNING: Low round-trip count - chains may not be mixing through temperatures")
+        logger.warning(f"Low round-trip count - chains may not be mixing through temperatures")

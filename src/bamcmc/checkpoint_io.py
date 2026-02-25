@@ -12,6 +12,9 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 from pathlib import Path
 
+import logging
+logger = logging.getLogger('bamcmc')
+
 
 def save_checkpoint(filepath: str, carry: tuple, user_config: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None) -> None:
     """
@@ -74,7 +77,7 @@ def save_checkpoint(filepath: str, carry: tuple, user_config: Dict[str, Any], me
 
     filepath = Path(filepath)
     np.savez_compressed(filepath, **checkpoint)
-    print(f"Checkpoint saved to {filepath}", flush=True)
+    logger.info(f"Checkpoint saved to {filepath}")
 
 
 def load_checkpoint(filepath: str) -> Dict[str, Any]:
@@ -200,8 +203,8 @@ def initialize_from_checkpoint(checkpoint: Dict[str, Any], user_config: Dict[str
 
     K = checkpoint['num_superchains']
     M = checkpoint['subchains_per_super']
-    print(f"Resuming from checkpoint at iteration {checkpoint['iteration']} (resetting run counter to 0)", flush=True)
-    print(f"Structure: {K} Superchains × {M} Subchains", flush=True)
+    logger.info(f"Resuming from checkpoint at iteration {checkpoint['iteration']} (resetting run counter to 0)")
+    logger.info(f"Structure: {K} Superchains × {M} Subchains")
 
     # Handle tempering state
     # Use int64 for temp assignments when x64 mode is enabled (dtype is float64)
@@ -224,7 +227,7 @@ def initialize_from_checkpoint(checkpoint: Dict[str, Any], user_config: Dict[str
         swap_attempts = jnp.zeros(max(1, n_temperatures - 1), dtype=jnp.int32)
         # Restore DEO parity if available, else default to 0 (even round)
         swap_parity = jnp.array(checkpoint.get('swap_parity', 0), dtype=jnp.int32)
-        print(f"Parallel Tempering: {checkpoint['n_temperatures']} temperatures (DEO parity: {int(swap_parity)})", flush=True)
+        logger.info(f"Parallel Tempering: {checkpoint['n_temperatures']} temperatures (DEO parity: {int(swap_parity)})")
     else:
         # Create fresh tempering state (single temperature = no tempering)
         if n_temperatures > 1:
@@ -236,7 +239,7 @@ def initialize_from_checkpoint(checkpoint: Dict[str, Any], user_config: Dict[str
             chains_per_temp = num_chains // n_temperatures
             temp_assignments = jnp.repeat(jnp.arange(n_temperatures, dtype=int_dtype), chains_per_temp)
             temp_assignments_A, temp_assignments_B = jnp.split(temp_assignments, [num_chains_a], axis=0)
-            print(f"Parallel Tempering: {n_temperatures} temperatures (fresh init)", flush=True)
+            logger.info(f"Parallel Tempering: {n_temperatures} temperatures (fresh init)")
         else:
             temperature_ladder = jnp.array([1.0], dtype=dtype)
             temp_assignments_A = jnp.zeros(num_chains_a, dtype=int_dtype)

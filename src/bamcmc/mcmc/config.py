@@ -25,6 +25,9 @@ from .utils import clean_config
 from ..batch_specs import BlockSpec, validate_block_specs, ProposalType, SamplerType
 from .types import BlockArrays, RunParams, build_block_arrays
 
+import logging
+logger = logging.getLogger('bamcmc')
+
 
 def get_discrete_param_indices(block_specs: List[BlockSpec]) -> List[int]:
     """
@@ -271,13 +274,13 @@ def configure_mcmc_system(
     discrete_param_indices = get_discrete_param_indices(raw_batch_specs)
     user_config['discrete_param_indices'] = discrete_param_indices
     if discrete_param_indices:
-        print(f"Discrete parameters: {len(discrete_param_indices)} (excluded from R-hat)")
+        logger.info(f"Discrete parameters: {len(discrete_param_indices)} (excluded from R-hat)")
 
     # Index process: save ALL chains (users filter to beta=1 post-hoc via temp_history)
     n_chains_to_save = num_chains
     user_config['n_chains_to_save'] = n_chains_to_save
     if n_temperatures > 1:
-        print(f"Index process: saving all {num_chains} chains with temperature traces")
+        logger.info(f"Index process: saving all {num_chains} chains with temperature traces")
 
     # Create RunParams as frozen dataclass for JAX static argument compatibility
     run_params = RunParams(
@@ -360,7 +363,7 @@ def initialize_mcmc_system(
     user_config['subchains_per_super'] = int(M)
 
     if M > 1:
-        print(f"Structure: {K} Superchains x {M} Subchains (Nested R-hat Mode)")
+        logger.info(f"Structure: {K} Superchains x {M} Subchains (Nested R-hat Mode)")
         # Take the first K distinct states as the 'roots' for the superchains
         base_states = all_initial_states[:K]  # (K, num_params)
 
@@ -368,7 +371,7 @@ def initialize_mcmc_system(
         # This ensures all M subchains in a group start at the exact same point
         all_initial_states = jnp.repeat(base_states, M, axis=0)
     else:
-        print(f"Structure: {K} Independent Chains (Standard R-hat Mode)")
+        logger.info(f"Structure: {K} Independent Chains (Standard R-hat Mode)")
         # If M=1, we just use the K (which equals num_chains) states directly.
         pass
 
@@ -392,8 +395,8 @@ def initialize_mcmc_system(
         # This gives [1.0, ..., beta_min] with geometric spacing
         temp_indices = jnp.arange(n_temperatures, dtype=int_dtype)
         temperature_ladder = jnp.power(beta_min, temp_indices / (n_temperatures - 1))
-        print(f"Parallel Tempering: {n_temperatures} temperatures")
-        print(f"  Temperature ladder: {[f'{t:.3f}' for t in temperature_ladder.tolist()]}")
+        logger.info(f"Parallel Tempering: {n_temperatures} temperatures")
+        logger.info(f"  Temperature ladder: {[f'{t:.3f}' for t in temperature_ladder.tolist()]}")
 
         # Assign temperatures to chains
         # IMPORTANT: Interleave temperatures so both A and B groups have all temps

@@ -63,6 +63,9 @@ from ..checkpoint_helpers import (
 from ..posterior_hash import get_posterior_hash
 from ..posterior_benchmark import get_manager as get_benchmark_manager
 
+import logging
+logger = logging.getLogger('bamcmc')
+
 # Public API for this module
 __all__ = [
     'rmcmc_single',
@@ -155,7 +158,7 @@ def _initialize_chains(
 
     if resume_from is not None:
         # --- RESUME MODE: Continue from exact checkpoint state ---
-        print(f"Loading checkpoint from {resume_from}...")
+        logger.info(f"Loading checkpoint from {resume_from}...")
         checkpoint = load_checkpoint(resume_from)
         _validate_checkpoint_compatibility(checkpoint, block_arrays, user_config)
         initial_carry, user_config = initialize_from_checkpoint(
@@ -173,7 +176,7 @@ def _initialize_chains(
     elif reset_from is not None:
         # --- RESET MODE: Start fresh from cross-chain mean with noise ---
         from ..reset_utils import generate_reset_vector
-        print(f"Resetting chains from checkpoint {reset_from}...")
+        logger.info(f"Resetting chains from checkpoint {reset_from}...")
 
         checkpoint = load_checkpoint(reset_from)
         _validate_checkpoint_compatibility(checkpoint, block_arrays, user_config)
@@ -181,8 +184,8 @@ def _initialize_chains(
         K = user_config.get('num_superchains', user_config['num_chains'])
         M = user_config['num_chains'] // K
 
-        print(f"  Source iteration: {checkpoint['iteration']}")
-        print(f"  Generating {K} reset starting points (noise_scale={reset_noise_scale})")
+        logger.info(f"  Source iteration: {checkpoint['iteration']}")
+        logger.info(f"  Generating {K} reset starting points (noise_scale={reset_noise_scale})")
 
         initial_vector_np = generate_reset_vector(
             checkpoint,
@@ -203,11 +206,11 @@ def _initialize_chains(
             num_blocks=block_arrays.num_blocks
         )
         # Reset starts fresh (iteration 0)
-        print(f"  Reset complete - starting fresh from iteration 0")
+        logger.info(f"  Reset complete - starting fresh from iteration 0")
 
     elif init_from is not None:
         # --- INIT FROM PRIOR: Use provided initial vector ---
-        print("Using provided initial vector (e.g., from prior samples)...", flush=True)
+        logger.info("Using provided initial vector (e.g., from prior samples)...")
 
         initial_carry, user_config = initialize_mcmc_system(
             init_from,
@@ -220,7 +223,7 @@ def _initialize_chains(
 
     else:
         # --- FRESH MODE: Generate new initial values ---
-        print("Generating initial vector...", flush=True)
+        logger.info("Generating initial vector...")
         initial_vector_np = model_ctx['initial_vector_fn'](user_config)
 
         initial_carry, user_config = initialize_mcmc_system(
@@ -263,14 +266,14 @@ def _run_mcmc_iterations(
     if total_iterations <= 0:
         return initial_carry, 0.0
 
-    print("\n--- MCMC RUN ---", flush = True)
+    logger.info("\n--- MCMC RUN ---")
 
     # Print time estimate if available
     if avg_time:
         compute_time_sec = avg_time * total_iterations
         finish_time = datetime.now() + timedelta(seconds=compute_time_sec)
-        print(f"Estimated computation time: {timedelta(seconds=int(compute_time_sec))}")
-        print(f"Estimated completion: {finish_time.strftime('%Y-%m-%d %I:%M:%S %p')}", flush=True)
+        logger.info(f"Estimated computation time: {timedelta(seconds=int(compute_time_sec))}")
+        logger.info(f"Estimated completion: {finish_time.strftime('%Y-%m-%d %I:%M:%S %p')}")
 
     # Run iterations in chunks
     start_run_time = time.perf_counter()
@@ -280,7 +283,7 @@ def _run_mcmc_iterations(
     for i in range(num_chunks):
         current_carry, _ = compiled_chunk(current_carry)
         if i % max(1, num_chunks // 10) == 0:
-            print(f"  Chunk {i+1}/{num_chunks}...", flush=True)
+            logger.info(f"  Chunk {i+1}/{num_chunks}...")
 
     jax.block_until_ready(current_carry)
     end_run_time = time.perf_counter()
@@ -307,8 +310,8 @@ def _run_mcmc_iterations(
         swap_attempts = jax.device_get(current_carry[13])
         print_swap_acceptance_summary(temperature_ladder, swap_accepts, swap_attempts)
 
-    print(f"\n--- MCMC Run Summary ---")
-    print(f"  Total Wall Time: {timedelta(seconds=int(wall_time))} ({wall_time:.2f}s)")
+    logger.info(f"\n--- MCMC Run Summary ---")
+    logger.info(f"  Total Wall Time: {timedelta(seconds=int(wall_time))} ({wall_time:.2f}s)")
 
     return current_carry, wall_time
 
@@ -331,18 +334,18 @@ def _transfer_to_host(
         host_temp_history: Temperature history array (or None if not tempering)
         host_lik_history: Likelihood history (or None)
     """
-    print("Transferring history to Host...", flush=True)
+    logger.info("Transferring history to Host...")
     host_history = jax.device_get(final_carry[4])
 
     # Transfer temperature history if using parallel tempering
     host_temp_history = None
     if n_temperatures > 1:
-        print("Transferring temperature history to Host...", flush=True)
+        logger.info("Transferring temperature history to Host...")
         host_temp_history = jax.device_get(final_carry[6])
 
     host_lik_history = None
     if save_likelihoods:
-        print("Transferring likelihood history to Host...", flush=True)
+        logger.info("Transferring likelihood history to Host...")
         host_lik_history = jax.device_get(final_carry[5])
 
     return host_history, host_temp_history, host_lik_history
@@ -534,12 +537,12 @@ def rmcmc_single(
           useful for tracing chains from their true starting point
     """
     # --- 1. VALIDATE CONFIGURATION ---
-    print("Validating MCMC configuration...")
+    logger.info("Validating MCMC configuration...")
     try:
         validate_mcmc_config(mcmc_config)
-        print("Configuration is valid\n")
+        logger.info("Configuration is valid\n")
     except ValueError as e:
-        print(f"Invalid configuration:\n{e}")
+        logger.info(f"Invalid configuration:\n{e}")
         raise
 
     # --- 2. CONFIGURE SYSTEM ---
@@ -560,15 +563,15 @@ def rmcmc_single(
     cached_benchmark = benchmark_mgr.get_cached_benchmark(posterior_hash)
 
     # Validate inputs
-    print("Validating inputs...", flush=True)
+    logger.info("Validating inputs...")
     try:
         validate_mcmc_inputs(user_config, runtime_ctx['data'], block_specs)
-        print("[OK] Validation passed", flush=True)
+        logger.info("Validation passed")
     except ValueError as e:
-        print(f"[FAIL] Validation failed:\n{e}", flush=True)
+        logger.info(f"[FAIL] Validation failed:\n{e}")
         raise
 
-    print(f"Starting sampling for {posterior_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    logger.info(f"Starting sampling for {posterior_id} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     # --- 3. INITIALIZE CHAINS ---
     initial_carry, user_config, run_params = _initialize_chains(
@@ -583,14 +586,14 @@ def rmcmc_single(
         init_from=init_from,
     )
 
-    print(f"JAX backend: {jax.default_backend()}")
-    print(f"Likelihood Saving: {'ENABLED' if user_config['save_likelihoods'] else 'DISABLED'}")
+    logger.info(f"JAX backend: {jax.default_backend()}")
+    logger.info(f"Likelihood Saving: {'ENABLED' if user_config['save_likelihoods'] else 'DISABLED'}")
 
     # --- 3b. SAVE INITIAL STATE (if requested) ---
     if save_initial_to is not None:
         initial_checkpoint = _build_checkpoint(initial_carry, posterior_id, user_config)
         np.savez_compressed(save_initial_to, **initial_checkpoint)
-        print(f"Initial state saved: {save_initial_to} (iteration {initial_checkpoint['iteration']})")
+        logger.info(f"Initial state saved: {save_initial_to} (iteration {initial_checkpoint['iteration']})")
 
     # --- 4. COMPILE KERNEL ---
     compiled_chunk, compile_time = compile_mcmc_kernel(
@@ -606,11 +609,11 @@ def rmcmc_single(
         cached_results = cached_benchmark.get('results', {})
         avg_time = cached_results.get('iteration_time_s')
         if avg_time:
-            print(f"\n--- Using Cached Benchmark (hash: {posterior_hash[:8]}...) ---")
-            print(f"  Per-iteration: {avg_time:.4f}s (from cache)")
+            logger.info(f"\n--- Using Cached Benchmark (hash: {posterior_hash[:8]}...) ---")
+            logger.info(f"  Per-iteration: {avg_time:.4f}s (from cache)")
             cached_git = cached_benchmark.get('git', {})
             if cached_git:
-                print(f"  Cached from: {cached_git.get('branch', '?')}@{cached_git.get('commit', '?')}")
+                logger.info(f"  Cached from: {cached_git.get('branch', '?')}@{cached_git.get('commit', '?')}")
     elif benchmark_iters > 0:
         # Run benchmark and save results
         bench_results = benchmark_mcmc_sampler(
@@ -627,7 +630,7 @@ def rmcmc_single(
             iteration_time=avg_time,
             benchmark_iterations=benchmark_iters,
         )
-        print(f"  Benchmark saved (hash: {posterior_hash[:8]}...)")
+        logger.info(f"  Benchmark saved (hash: {posterior_hash[:8]}...)")
 
     # --- 6. RUN MCMC ITERATIONS ---
     total_iterations = run_params.BURN_ITER + user_config["num_iterations"]
@@ -658,7 +661,7 @@ def rmcmc_single(
         )
     else:
         # No iterations to run
-        print("\nSkipping main run.", flush=True)
+        logger.info("\nSkipping main run.")
         final_carry = initial_carry
         wall_time = 0.0
         nrhat_values = None
@@ -695,13 +698,13 @@ def rmcmc_single(
         'total_iterations': total_iterations,
     }
 
-    print("\n--- Post-Run Diagnostics ---")
+    logger.info("\n--- Post-Run Diagnostics ---")
     diagnostics = diagnose_sampler_issues(host_history, user_config, diagnostics)
     print_diagnostics(diagnostics)
 
     if diagnostics['issues']:
-        print("\n  Warning: Issues detected during sampling!")
-        print("Review diagnostics above before using results.")
+        logger.warning("\n  Issues detected during sampling!")
+        logger.info("Review diagnostics above before using results.")
 
     # --- 10. BUILD OUTPUTS ---
     final_checkpoint = _build_checkpoint(final_carry, posterior_id, user_config)

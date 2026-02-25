@@ -19,11 +19,14 @@ Usage:
     )
 """
 
+import logging
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from pathlib import Path
+
+logger = logging.getLogger('bamcmc')
 
 
 def compute_chain_statistics(states_A: np.ndarray, states_B: np.ndarray) -> Dict[str, Any]:
@@ -297,7 +300,7 @@ def reset_from_checkpoint(checkpoint_path: str, model_type: str, n_subjects: int
 
     # Validate model type matches
     if checkpoint['posterior_id'] != model_type:
-        print(f"Warning: Checkpoint model ({checkpoint['posterior_id']}) "
+        logger.warning(f"Checkpoint model ({checkpoint['posterior_id']}) "
               f"differs from requested ({model_type})")
 
     init_vector = generate_reset_vector(
@@ -366,8 +369,8 @@ def select_diverse_states(checkpoint: Dict[str, Any], K: int, rng_seed: Optional
 
     selected_states = all_states[indices[:K], :]
 
-    print(f"Selected {K} diverse states from {n_chains} chains")
-    print(f"  Chain indices: {indices[:K]}")
+    logger.info(f"Selected {K} diverse states from {n_chains} chains")
+    logger.info(f"  Chain indices: {indices[:K]}")
 
     return selected_states
 
@@ -405,10 +408,10 @@ def init_from_prior(prior_checkpoint_path: str, K: int, M: int, rng_seed: Option
 
     checkpoint = load_checkpoint(prior_checkpoint_path)
 
-    print(f"Initializing from prior checkpoint:")
-    print(f"  Source: {prior_checkpoint_path}")
-    print(f"  Iteration: {checkpoint['iteration']}")
-    print(f"  Model: {checkpoint['posterior_id']}")
+    logger.info(f"Initializing from prior checkpoint:")
+    logger.info(f"  Source: {prior_checkpoint_path}")
+    logger.info(f"  Iteration: {checkpoint['iteration']}")
+    logger.info(f"  Model: {checkpoint['posterior_id']}")
 
     # Select K diverse states from prior
     base_states = select_diverse_states(checkpoint, K, rng_seed)
@@ -416,7 +419,7 @@ def init_from_prior(prior_checkpoint_path: str, K: int, M: int, rng_seed: Option
     # Replicate each K state M times for subchains
     all_states = np.repeat(base_states, M, axis=0)  # (K*M, n_params)
 
-    print(f"  Output: {K} superchains × {M} subchains = {K*M} total chains")
+    logger.info(f"  Output: {K} superchains × {M} subchains = {K*M} total chains")
 
     info = {
         'source_checkpoint': prior_checkpoint_path,
@@ -442,11 +445,11 @@ def print_reset_summary(checkpoint: Dict[str, Any], model_type: str, n_subjects:
     stats = compute_chain_statistics(checkpoint['states_A'], checkpoint['states_B'])
     discrete_indices = get_discrete_param_indices(model_type, n_subjects)
 
-    print(f"\nReset Summary for {model_type}")
-    print("=" * 60)
-    print(f"Chains: {stats['n_chains']} total")
-    print(f"Parameters: {stats['n_params']}")
-    print(f"Source iteration: {checkpoint['iteration']}")
+    logger.info(f"\nReset Summary for {model_type}")
+    logger.info("=" * 60)
+    logger.info(f"Chains: {stats['n_chains']} total")
+    logger.info(f"Parameters: {stats['n_params']}")
+    logger.info(f"Source iteration: {checkpoint['iteration']}")
 
     # Summarize z distribution (discrete parameters)
     if discrete_indices:
@@ -456,18 +459,18 @@ def print_reset_summary(checkpoint: Dict[str, Any], model_type: str, n_subjects:
         ])
         z_flat = all_z.flatten().astype(int)
         unique, counts = np.unique(z_flat, return_counts=True)
-        print(f"\nDiscrete parameter distribution (z indicators):")
+        logger.info(f"\nDiscrete parameter distribution (z indicators):")
         for z, c in zip(unique, counts):
-            print(f"  Value {z}: {c/len(z_flat):.1%}")
+            logger.info(f"  Value {z}: {c/len(z_flat):.1%}")
 
     # Parameter spread summary
-    print(f"\nParameter spread (std across chains):")
-    print(f"  Min std:  {stats['std'].min():.4f}")
-    print(f"  Max std:  {stats['std'].max():.4f}")
-    print(f"  Mean std: {stats['std'].mean():.4f}")
+    logger.info(f"\nParameter spread (std across chains):")
+    logger.info(f"  Min std:  {stats['std'].min():.4f}")
+    logger.info(f"  Max std:  {stats['std'].max():.4f}")
+    logger.info(f"  Mean std: {stats['std'].mean():.4f}")
 
     # Identify potentially stuck parameters (very low std)
     stuck_mask = stats['std'] < 0.001
     if stuck_mask.any():
         n_stuck = stuck_mask.sum()
-        print(f"\n  WARNING: {n_stuck} parameters have std < 0.001 (possibly stuck)")
+        logger.warning(f"\n  WARNING: {n_stuck} parameters have std < 0.001 (possibly stuck)")

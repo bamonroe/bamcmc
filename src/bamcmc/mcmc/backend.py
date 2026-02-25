@@ -45,6 +45,9 @@ from ..checkpoint_helpers import (
     get_model_paths,
 )
 
+import logging
+logger = logging.getLogger('bamcmc')
+
 # Public API for this module
 __all__ = [
     'rmcmc',
@@ -134,8 +137,8 @@ def rmcmc(
         config = {**mcmc_config, 'reset_runs': 3, 'resume_runs': 5}
         summary = rmcmc(config, data, output_dir='./output')
 
-        print(f"Completed {summary['total_runs_completed']} runs")
-        print(f"History files: {summary['history_files']}")
+        logger.info(f"Completed {summary['total_runs_completed']} runs")
+        logger.info(f"History files: {summary['history_files']}")
     """
     model_name = mcmc_config['posterior_id']
 
@@ -186,9 +189,9 @@ def rmcmc(
     existing_checkpoint = scan['latest_checkpoint']
 
     if existing_checkpoint:
-        print(f"Found existing checkpoint: {existing_checkpoint} (run {existing_run_index})")
+        logger.info(f"Found existing checkpoint: {existing_checkpoint} (run {existing_run_index})")
     else:
-        print(f"No existing checkpoints found for {model_name}")
+        logger.info(f"No existing checkpoints found for {model_name}")
 
     # Expand run schedule into list of (run_index, mode) pairs
     run_list = []
@@ -199,7 +202,7 @@ def rmcmc(
             run_list.append(mode)
 
     if not run_list:
-        print("Empty run schedule, nothing to do")
+        logger.info("Empty run schedule, nothing to do")
         return {
             'output_dir': output_dir,
             'model_name': model_name,
@@ -217,11 +220,11 @@ def rmcmc(
     schedule_parts = [f"{count} {mode}" for mode, count in run_schedule]
     schedule_str = " + ".join(schedule_parts)
 
-    print(f"\n{'='*60}")
-    print(f"MULTI-RUN MCMC: {model_name}")
-    print(f"Schedule: {schedule_str} ({total_runs} total runs)")
-    print(f"Starting from run index {start_run_index}")
-    print(f"{'='*60}\n")
+    logger.info(f"\n{'='*60}")
+    logger.info(f"MULTI-RUN MCMC: {model_name}")
+    logger.info(f"Schedule: {schedule_str} ({total_runs} total runs)")
+    logger.info(f"Starting from run index {start_run_index}")
+    logger.info(f"{'='*60}\n")
 
     # Track run information
     run_log = []
@@ -241,7 +244,7 @@ def rmcmc(
         # Check if this run already completed (output checkpoint exists)
         output_checkpoint_file = checkpoint_path(output_checkpoint_num)
         if Path(output_checkpoint_file).exists():
-            print(f"\n--- Run {i + 1}/{total_runs} (overall #{sampling_run_num + 1}) already complete (checkpoint_{output_checkpoint_num:03d} exists), skipping ---")
+            logger.info(f"\n--- Run {i + 1}/{total_runs} (overall #{sampling_run_num + 1}) already complete (checkpoint_{output_checkpoint_num:03d} exists), skipping ---")
             run_log.append({
                 'run_index': sampling_run_num,
                 'mode': 'skipped',
@@ -261,7 +264,7 @@ def rmcmc(
                 if Path(cp).exists():
                     input_checkpoint_file = cp
                     has_input_checkpoint = True
-                    print(f"  Note: Using checkpoint_{idx:03d} (checkpoint_{input_checkpoint_num:03d} not found)")
+                    logger.info(f"  Note: Using checkpoint_{idx:03d} (checkpoint_{input_checkpoint_num:03d} not found)")
                     break
 
         # Determine mode and whether we need to save initial state
@@ -287,17 +290,17 @@ def rmcmc(
             else:
                 save_initial_to = f"{output_dir}/{model_name}_checkpoint{input_checkpoint_num}_reset.npz"
 
-        print(f"\n{'='*60}")
-        print(f"Sampling run {i + 1}/{total_runs} (overall #{sampling_run_num + 1}, mode={actual_mode})")
-        print(f"  Output: checkpoint_{output_checkpoint_num}")
-        print(f"{'='*60}")
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Sampling run {i + 1}/{total_runs} (overall #{sampling_run_num + 1}, mode={actual_mode})")
+        logger.info(f"  Output: checkpoint_{output_checkpoint_num}")
+        logger.info(f"{'='*60}")
 
         # Handle burn_in_fresh option
         run_config = mcmc_config.copy()
         if burn_in_fresh and actual_mode != 'fresh':
             run_config['burn_iter'] = 0
             if original_burn_iter > 0:
-                print(f"  burn_in_fresh=True: skipping burn-in ({actual_mode} run)")
+                logger.info(f"  burn_in_fresh=True: skipping burn-in ({actual_mode} run)")
         else:
             run_config['burn_iter'] = original_burn_iter
 
@@ -313,13 +316,13 @@ def rmcmc(
                 save_initial_to=save_initial_to,
             )
         except Exception as e:
-            print(f"\nError during run {i + 1}/{total_runs} (overall #{sampling_run_num + 1}): {e}")
+            logger.error(f"\nError during run {i + 1}/{total_runs} (overall #{sampling_run_num + 1}): {e}")
             raise
 
         # Save output checkpoint
         np.savez_compressed(output_checkpoint_file, **checkpoint)
         final_iteration = checkpoint['iteration']
-        print(f"\nCheckpoint saved: {output_checkpoint_file} (iteration {final_iteration})")
+        logger.info(f"\nCheckpoint saved: {output_checkpoint_file} (iteration {final_iteration})")
 
         # Save history if we collected samples
         history = results.get('history')
@@ -327,7 +330,7 @@ def rmcmc(
         if history is not None and len(history) > 0:
             history_file = history_path(sampling_run_num)
             np.savez_compressed(history_file, **results, run_index=sampling_run_num)
-            print(f"History saved: {history_file}")
+            logger.info(f"History saved: {history_file}")
 
         run_log.append({
             'run_index': sampling_run_num,
@@ -343,9 +346,9 @@ def rmcmc(
         # Clean up memory between runs
         gc.collect()
 
-    print(f"\n{'='*60}")
-    print(f"MULTI-RUN COMPLETE: {total_runs_completed} runs")
-    print(f"{'='*60}\n")
+    logger.info(f"\n{'='*60}")
+    logger.info(f"MULTI-RUN COMPLETE: {total_runs_completed} runs")
+    logger.info(f"{'='*60}\n")
 
     # Scan for final state
     final_scan = scan_checkpoints(output_dir, model_name)

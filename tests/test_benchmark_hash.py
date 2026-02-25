@@ -351,24 +351,26 @@ class TestBenchmarkManagerListPrint:
             # Most recent should be first
             assert benchmarks[0]["posterior_id"] == "second"
 
-    def test_print_benchmark_smoke(self, capsys):
+    def test_print_benchmark_smoke(self, caplog):
         """print_benchmark runs without error."""
+        import logging
         with tempfile.TemporaryDirectory() as tmpdir:
             mgr = PosteriorBenchmarkManager(cache_dir=tmpdir)
             bm = _save_benchmark_helper(mgr)
-            mgr.print_benchmark(bm)
-            captured = capsys.readouterr()
-            assert "test_model" in captured.out
+            with caplog.at_level(logging.INFO, logger='bamcmc'):
+                mgr.print_benchmark(bm)
+            assert "test_model" in caplog.text
 
-    def test_print_comparison_smoke(self, capsys):
+    def test_print_comparison_smoke(self, caplog):
         """print_comparison runs without error."""
+        import logging
         with tempfile.TemporaryDirectory() as tmpdir:
             mgr = PosteriorBenchmarkManager(cache_dir=tmpdir)
             _save_benchmark_helper(mgr, posterior_hash="prt001")
             comparison = mgr.compare_benchmark("prt001", 0.002, 6.0)
-            mgr.print_comparison(comparison, posterior_id="test_model")
-            captured = capsys.readouterr()
-            assert "BENCHMARK COMPARISON" in captured.out
+            with caplog.at_level(logging.INFO, logger='bamcmc'):
+                mgr.print_comparison(comparison, posterior_id="test_model")
+            assert "BENCHMARK COMPARISON" in caplog.text
 
 
 class TestBenchmarkManagerFactory:

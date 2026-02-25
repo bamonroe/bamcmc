@@ -9,6 +9,9 @@ posterior modules (which would trigger JAX initialization).
 import json
 from pathlib import Path
 
+import logging
+logger = logging.getLogger('bamcmc')
+
 
 def save_prior_config(output_dir: str, model_name: str, prior_config: dict):
     """
@@ -52,7 +55,7 @@ def save_prior_config(output_dir: str, model_name: str, prior_config: dict):
     with open(config_path, 'w') as f:
         json.dump(serializable_config, f, indent=2)
 
-    print(f"Prior config saved: {config_path}", flush=True)
+    logger.info(f"Prior config saved: {config_path}")
     return str(config_path)
 
 

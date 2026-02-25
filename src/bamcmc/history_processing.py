@@ -15,6 +15,9 @@ from pathlib import Path
 
 from .mcmc.diagnostics import TAU_NESTED_RHAT
 
+import logging
+logger = logging.getLogger('bamcmc')
+
 
 def combine_batch_histories(batch_paths: List[str]) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Dict[str, Any]]:
     """
@@ -41,7 +44,7 @@ def combine_batch_histories(batch_paths: List[str]) -> Tuple[np.ndarray, np.ndar
     metadata = None
 
     for i, path in enumerate(batch_paths):
-        print(f"Loading batch {i}: {path}...", flush=True)
+        logger.info(f"Loading batch {i}: {path}...")
         # Use context manager to close NpzFile after loading
         with np.load(path, allow_pickle=True) as data:
             hist = data['history'].copy()
@@ -95,12 +98,12 @@ def combine_batch_histories(batch_paths: List[str]) -> Tuple[np.ndarray, np.ndar
     metadata['batch_sizes'] = batch_sizes
     metadata['n_batches'] = len(batch_paths)
 
-    print(f"Combined {len(batch_paths)} batches:", flush=True)
-    print(f"  Total samples: {combined_history.shape[0]}", flush=True)
-    print(f"  Iteration range: {combined_iterations[0]} - {combined_iterations[-1]}", flush=True)
-    print(f"  Batch boundaries: {batch_boundaries}", flush=True)
+    logger.info(f"Combined {len(batch_paths)} batches:")
+    logger.info(f"  Total samples: {combined_history.shape[0]}")
+    logger.info(f"  Iteration range: {combined_iterations[0]} - {combined_iterations[-1]}")
+    logger.info(f"  Batch boundaries: {batch_boundaries}")
     if combined_temp_history is not None:
-        print(f"  Temperature history: {combined_temp_history.shape}", flush=True)
+        logger.info(f"  Temperature history: {combined_temp_history.shape}")
 
     return combined_history, combined_iterations, combined_likelihoods, metadata
 
@@ -122,9 +125,9 @@ def apply_burnin(history: np.ndarray, iterations: np.ndarray, likelihoods: Optio
     n_dropped = np.sum(~mask)
     n_kept = np.sum(mask)
 
-    print(f"Burn-in filter (min_iteration={min_iteration}):", flush=True)
-    print(f"  Dropped: {n_dropped} samples (iterations {iterations[0]} - {min_iteration - 1})", flush=True)
-    print(f"  Kept: {n_kept} samples (iterations {min_iteration} - {iterations[-1]})", flush=True)
+    logger.info(f"Burn-in filter (min_iteration={min_iteration}):")
+    logger.info(f"  Dropped: {n_dropped} samples (iterations {iterations[0]} - {min_iteration - 1})")
+    logger.info(f"  Kept: {n_kept} samples (iterations {min_iteration} - {iterations[-1]})")
 
     filtered_history = history[mask]
     filtered_iterations = iterations[mask]
@@ -156,7 +159,7 @@ def compute_rhat_from_history(history: np.ndarray, K: int, M: int, n_temperature
     # Adjust K for parallel tempering (only beta=1 chains are in history)
     if n_temperatures > 1:
         K_effective = K // n_temperatures
-        print(f"  (Tempering active: using K={K_effective} of {K} superchains for beta=1 chains)", flush=True)
+        logger.info(f"  (Tempering active: using K={K_effective} of {K} superchains for beta=1 chains)")
         K = K_effective
 
     if n_chains != K * M:
@@ -201,22 +204,22 @@ def compute_rhat_from_history(history: np.ndarray, K: int, M: int, n_temperature
     # No special handling - stuck continuous params will show as NaN/inf
     rhat = np.sqrt(V_hat / W)
 
-    print(f"Nested R-hat ({K}×{M}):", flush=True)
-    print(f"  Max: {np.nanmax(rhat):.4f}", flush=True)
-    print(f"  Median: {np.nanmedian(rhat):.4f}", flush=True)
-    print(f"  Min: {np.nanmin(rhat):.4f}", flush=True)
+    logger.info(f"Nested R-hat ({K}×{M}):")
+    logger.info(f"  Max: {np.nanmax(rhat):.4f}")
+    logger.info(f"  Median: {np.nanmedian(rhat):.4f}")
+    logger.info(f"  Min: {np.nanmin(rhat):.4f}")
 
     # Check for NaN/Inf
     n_nan = np.sum(~np.isfinite(rhat))
     if n_nan > 0:
-        print(f"  WARNING: {n_nan} params have NaN/Inf R-hat (zero variance - stuck or discrete)", flush=True)
+        logger.warning(f"{n_nan} params have NaN/Inf R-hat (zero variance - stuck or discrete)")
 
     # Threshold from Margossian et al. (2022)
     threshold = np.sqrt(1 + 1/M + TAU_NESTED_RHAT)
     if np.nanmax(rhat) < threshold:
-        print(f"  Converged (max < {threshold:.4f})", flush=True)
+        logger.info(f"  Converged (max < {threshold:.4f})")
     else:
-        print(f"  Not converged (max = {np.nanmax(rhat):.4f} >= {threshold:.4f})", flush=True)
+        logger.info(f"  Not converged (max = {np.nanmax(rhat):.4f} >= {threshold:.4f})")
 
     return rhat
 
@@ -267,7 +270,7 @@ def split_history_by_subject(
     run_idx = history_path.stem.split('_')[-1]
 
     if verbose:
-        print(f"Splitting {history_path.name}...", flush=True)
+        logger.info(f"Splitting {history_path.name}...")
 
     # Load the full history
     data = np.load(history_path, allow_pickle=True)
@@ -327,7 +330,7 @@ def split_history_by_subject(
     np.savez_compressed(hyper_path, **save_dict)
 
     if verbose:
-        print(f"  Saved hyperparameters: {hyper_path.name} ({hyper_history.nbytes / 1e6:.1f} MB)", flush=True)
+        logger.info(f"  Saved hyperparameters: {hyper_path.name} ({hyper_history.nbytes / 1e6:.1f} MB)")
 
     # Save each subject's parameters
     for subj_idx in range(n_subjects):
@@ -351,7 +354,7 @@ def split_history_by_subject(
 
     if verbose:
         per_subj_mb = n_samples * n_chains * params_per_subject * 8 / 1e6
-        print(f"  Saved {n_subjects} subject files (~{per_subj_mb:.1f} MB each)", flush=True)
+        logger.info(f"  Saved {n_subjects} subject files (~{per_subj_mb:.1f} MB each)")
 
     return {
         'hyper_path': str(hyper_path),
@@ -393,20 +396,20 @@ def postprocess_all_histories(
     per_subject_dir = paths['history_per_subject']
 
     if not full_history_dir.exists():
-        print(f"No history directory found: {full_history_dir}", flush=True)
+        logger.info(f"No history directory found: {full_history_dir}")
         return {'processed': 0}
 
     # Find all history files
     history_files = sorted(full_history_dir.glob('history_*.npz'))
 
     if not history_files:
-        print(f"No history files found in {full_history_dir}", flush=True)
+        logger.info(f"No history files found in {full_history_dir}")
         return {'processed': 0}
 
     if verbose:
-        print(f"Post-processing {len(history_files)} history files...", flush=True)
+        logger.info(f"Post-processing {len(history_files)} history files...")
         total_size = sum(f.stat().st_size for f in history_files)
-        print(f"  Total size: {total_size / 1e9:.1f} GB", flush=True)
+        logger.info(f"  Total size: {total_size / 1e9:.1f} GB")
 
     results = []
     for hist_path in history_files:

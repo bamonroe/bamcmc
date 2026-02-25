@@ -1,4 +1,7 @@
+import logging
 import os
+
+logger = logging.getLogger('bamcmc')
 
 # Suppress CUDA/XLA C++ warnings (GPU interconnect, NUMA, cuDNN factories)
 # Must be set before JAX import; does not affect JAX compilation time messages
@@ -23,15 +26,15 @@ def clean_config(mcmc_config):
     mcmc_config.setdefault('proposal', 'chain_mean')
 
     if type(mcmc_config["gpu_preallocation"]) != bool:
-        print("'gpu_preallocation' must be 'True' or 'False'")
+        logger.warning("'gpu_preallocation' must be 'True' or 'False'")
 
     # 1. Environment Setup
     if 'XLA_PYTHON_CLIENT_PREALLOCATE' not in os.environ:
         if mcmc_config["gpu_preallocation"]:
-            print("Pre-allocating GPU memory.")
+            logger.info("Pre-allocating GPU memory.")
             os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'true'
         else:
-            print("WARNING: Disabling GPU memory pre-allocation.")
+            logger.warning("Disabling GPU memory pre-allocation.")
             os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
     return mcmc_config

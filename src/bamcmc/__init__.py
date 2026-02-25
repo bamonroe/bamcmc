@@ -48,6 +48,17 @@ Example:
     from bamcmc import reset_from_checkpoint
     init_vector, info = reset_from_checkpoint('checkpoint.npz', 'my_model', n_subjects=100, K=50, M=20)
 """
+# Logging setup — default to INFO level with plain message format.
+# Users can control verbosity: logging.getLogger('bamcmc').setLevel(logging.WARNING)
+import logging as _logging
+
+_logger = _logging.getLogger('bamcmc')
+if not _logger.handlers:
+    _handler = _logging.StreamHandler()
+    _handler.setFormatter(_logging.Formatter('%(message)s'))
+    _logger.addHandler(_handler)
+    _logger.setLevel(_logging.INFO)
+
 # CRITICAL: Import jax_config FIRST to set environment variables before JAX loads
 from . import jax_config  # noqa: F401
 

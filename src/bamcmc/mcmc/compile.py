@@ -19,6 +19,9 @@ from ..registry import get_posterior
 from .types import BlockArrays, RunParams
 from .scan import mcmc_scan_body_offload
 
+import logging
+logger = logging.getLogger('bamcmc')
+
 
 # --- CONSTANTS ---
 # Default chunk size (used as fallback; actual value comes from run_params.CHUNK_SIZE)
@@ -169,8 +172,8 @@ def benchmark_mcmc_sampler(compiled_chunk_fn, initial_carry, benchmark_iters: in
     Returns:
         Dict with 'avg_time' key containing average time per iteration
     """
-    print("\n--- BENCHMARKING ---")
-    print(f"Running benchmark ({benchmark_iters} iterations)...", flush=True)
+    logger.info("\n--- BENCHMARKING ---")
+    logger.info(f"Running benchmark ({benchmark_iters} iterations)...")
     num_chunks = (benchmark_iters + chunk_size - 1) // chunk_size
     start_bench = time.perf_counter()
     current_carry = initial_carry
@@ -180,8 +183,8 @@ def benchmark_mcmc_sampler(compiled_chunk_fn, initial_carry, benchmark_iters: in
     end_bench = time.perf_counter()
     total_time = end_bench - start_bench
     avg_time = total_time / (num_chunks * chunk_size)
-    print("--- Benchmark Results (per iteration) ---")
-    print(f"  Avg: {avg_time:.6f} s")
+    logger.info("--- Benchmark Results (per iteration) ---")
+    logger.info(f"  Avg: {avg_time:.6f} s")
     return {'avg_time': avg_time}
 
 
@@ -218,7 +221,7 @@ def compile_mcmc_kernel(
     posterior_id = user_config['posterior_id']
 
     if compiled_chunk is not None:
-        print("Using cached kernel (in-memory)", flush=True)
+        logger.info("Using cached kernel (in-memory)")
         return compiled_chunk, 0.0
 
     # Module-level function approach for reliable compilation.
@@ -231,7 +234,7 @@ def compile_mcmc_kernel(
         static_argnames=('data_static', 'run_params', 'posterior_id')
     )
 
-    print("Compiling kernel... ", end="", flush=True)
+    logger.info("Compiling kernel... ")
     compile_start = time.perf_counter()
 
     # AOT compilation with explicit arguments
@@ -242,7 +245,7 @@ def compile_mcmc_kernel(
 
     compile_end = time.perf_counter()
     compile_time = compile_end - compile_start
-    print(f"Done ({compile_time:.4f}s)")
+    logger.info(f"Done ({compile_time:.4f}s)")
 
     # Create wrapper that binds data arguments (they don't change during run)
     _cf = compiled_fn
@@ -252,6 +255,6 @@ def compile_mcmc_kernel(
 
     # Cache the compiled kernel for in-memory reuse
     _COMPILED_KERNEL_CACHE[cache_key] = compiled_chunk
-    print(f"Kernel cached (key: {posterior_id}, {user_config['num_chains']} chains)")
+    logger.info(f"Kernel cached (key: {posterior_id}, {user_config['num_chains']} chains)")
 
     return compiled_chunk, compile_time

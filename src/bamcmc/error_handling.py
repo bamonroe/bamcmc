@@ -8,6 +8,9 @@ from typing import Any, Dict
 
 import numpy as np
 
+import logging
+logger = logging.getLogger('bamcmc')
+
 
 def validate_mcmc_config(mcmc_config: Dict[str, Any]) -> None:
     """
@@ -118,19 +121,19 @@ def diagnose_sampler_issues(history: np.ndarray, mcmc_config: Dict[str, Any], di
 def print_diagnostics(diagnostics: Dict[str, Any]) -> None:
     """Pretty-print diagnostics from diagnose_sampler_issues."""
     if diagnostics['issues']:
-        print("\n[ERROR] ISSUES:")
+        logger.error("\n[ERROR] ISSUES:")
         for issue in diagnostics['issues']:
-            print(f"  - {issue}")
+            logger.error(f"  - {issue}")
 
     if diagnostics['warnings']:
-        print("\n[WARN] WARNINGS:")
+        logger.warning("\n[WARN] WARNINGS:")
         for warning in diagnostics['warnings']:
-            print(f"  - {warning}")
+            logger.warning(f"  - {warning}")
 
     if diagnostics['info']:
-        print("\n[INFO] INFO:")
+        logger.info("\n[INFO] INFO:")
         for info in diagnostics['info']:
-            print(f"  - {info}")
+            logger.info(f"  - {info}")
 
     if not diagnostics['issues'] and not diagnostics['warnings']:
-        print("\n[OK] No issues detected")
+        logger.info("\n[OK] No issues detected")

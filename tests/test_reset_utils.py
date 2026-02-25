@@ -352,17 +352,19 @@ class TestSelectDiverseStates:
 class TestPrintResetSummary:
     """Smoke test for print_reset_summary."""
 
-    def test_runs_without_error(self, capsys):
+    def test_runs_without_error(self, caplog):
         """Should print summary without raising."""
+        import logging
         cp = _make_checkpoint(n_params=10)
-        print_reset_summary(cp, 'unknown_model', 0)
+        with caplog.at_level(logging.INFO, logger='bamcmc'):
+            print_reset_summary(cp, 'unknown_model', 0)
 
-        captured = capsys.readouterr()
-        assert 'Reset Summary' in captured.out
-        assert 'Parameters: 10' in captured.out
+        assert 'Reset Summary' in caplog.text
+        assert 'Parameters: 10' in caplog.text
 
-    def test_with_mixture_model(self, capsys):
+    def test_with_mixture_model(self, caplog):
         """Should print z distribution for mixture models."""
+        import logging
         n_subjects = 2
         n_params = 2 * 20 + 3 + 12 + 14 + 12
         cp = _make_checkpoint(n_params=n_params)
@@ -372,10 +374,10 @@ class TestPrintResetSummary:
             arr[:, 19] = 1.0
             arr[:, 39] = 2.0
 
-        print_reset_summary(cp, 'mixture_3model_bhm', n_subjects)
+        with caplog.at_level(logging.INFO, logger='bamcmc'):
+            print_reset_summary(cp, 'mixture_3model_bhm', n_subjects)
 
-        captured = capsys.readouterr()
-        assert 'Discrete parameter distribution' in captured.out
+        assert 'Discrete parameter distribution' in caplog.text
 
 
 # ============================================================================
@@ -400,16 +402,17 @@ class TestResetFromCheckpoint:
         assert info['reset_K'] == 2
         assert info['reset_M'] == 3
 
-    def test_model_mismatch_warns(self, capsys):
+    def test_model_mismatch_warns(self, caplog):
         """Should warn when checkpoint model differs from requested."""
+        import logging
         cp = _make_checkpoint(posterior_id='model_A')
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = _save_checkpoint_to_disk(cp, tmpdir)
-            reset_from_checkpoint(path, 'model_B', 0, K=2, M=2, rng_seed=42)
+        with caplog.at_level(logging.WARNING, logger='bamcmc'):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                path = _save_checkpoint_to_disk(cp, tmpdir)
+                reset_from_checkpoint(path, 'model_B', 0, K=2, M=2, rng_seed=42)
 
-        captured = capsys.readouterr()
-        assert 'Warning' in captured.out
+        assert 'Checkpoint model' in caplog.text
 
 
 # ============================================================================

@@ -536,3 +536,41 @@ class TestSettingsValidation:
         assert settings_matrix[0, SettingSlot.CHAIN_PROB] == 0.3
         assert settings_matrix[1, SettingSlot.CHAIN_PROB] == 0.7
         assert settings_matrix[2, SettingSlot.CHAIN_PROB] == 0.9
+
+
+# ============================================================================
+# LOGGING CONFIGURATION TESTS
+# ============================================================================
+
+class TestLoggingConfig:
+    """Test that the bamcmc logger is properly configured."""
+
+    def test_logger_exists(self):
+        """The bamcmc logger should be configured on import."""
+        import logging
+        logger = logging.getLogger('bamcmc')
+        assert logger.handlers, "bamcmc logger should have at least one handler"
+        assert logger.level == logging.INFO
+
+    def test_logger_output_captured(self, caplog):
+        """Logger output should be capturable via standard logging."""
+        import logging
+        logger = logging.getLogger('bamcmc')
+        with caplog.at_level(logging.INFO, logger='bamcmc'):
+            logger.info("test message")
+        assert "test message" in caplog.text
+
+    def test_logger_verbosity_control(self, caplog):
+        """Setting level to WARNING should suppress INFO messages."""
+        import logging
+        logger = logging.getLogger('bamcmc')
+        original_level = logger.level
+        try:
+            logger.setLevel(logging.WARNING)
+            with caplog.at_level(logging.WARNING, logger='bamcmc'):
+                logger.info("should not appear")
+                logger.warning("should appear")
+            assert "should not appear" not in caplog.text
+            assert "should appear" in caplog.text
+        finally:
+            logger.setLevel(original_level)
