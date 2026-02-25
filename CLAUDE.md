@@ -298,12 +298,12 @@ All 13 proposals refactored to use these helpers. Saves ~5-15 lines per proposal
 - `src/bamcmc/reset_utils.py`: all 9 public/private functions
 - `src/bamcmc/error_handling.py`: `validate_mcmc_config()`, `diagnose_sampler_issues()`, `print_diagnostics()`
 
-#### 15. Test Coverage for Benchmark and Hash Systems
+#### 15. ~~Test Coverage for Benchmark and Hash Systems~~ (FIXED)
 
-**Status**: Open. The benchmarking/caching system is completely untested:
-- `src/bamcmc/posterior_benchmark.py`: `PosteriorBenchmarkManager`, `run_benchmark()`, `get_benchmark_manager()`
-- `src/bamcmc/posterior_hash.py`: `compute_posterior_hash()`
-- `src/bamcmc/prior_config.py`: `save_prior_config()`, `load_prior_config()`
+**Status**: Fixed. Added 34 tests in `tests/test_benchmark_hash.py` covering all three modules:
+- `posterior_hash.py`: `get_function_source_hash` (4 tests), `get_data_hash` (5 tests), `get_posterior_hash`/`compute_posterior_hash` (4 tests)
+- `posterior_benchmark.py`: `PosteriorBenchmarkManager` save/load (5 tests), hardware match (2 tests), cached benchmark (3 tests), compare (2 tests), list/print (3 tests), factory functions (2 tests)
+- `prior_config.py`: save/load roundtrip, nonexistent file, numpy array serialization (4 tests)
 
 ### Lower Priority
 
@@ -344,7 +344,7 @@ Major files: `diagnostics.py` (23), `single_run.py` (24), `posterior_benchmark.p
 | ~~Medium~~ | ~~Proposal code duplication~~ | proposals/*.py, common.py | **FIXED** |
 | ~~Medium~~ | ~~Inconsistent epsilon/nugget constants~~ | scan.py, proposals/common.py | **FIXED** |
 | ~~Medium~~ | ~~Type annotations on public API~~ | checkpoint_io.py, history_processing.py, etc. | **FIXED** |
-| Medium | Test benchmark/hash systems | posterior_benchmark.py, posterior_hash.py | Open |
+| ~~Medium~~ | ~~Test benchmark/hash systems~~ | test_benchmark_hash.py | **FIXED** |
 | Low | Large functions (200+ lines) | backend.py, single_run.py, config.py | Open |
 | Low | Logging vs print statements | Multiple files (127+ prints) | Open |
 | Low | Hardcoded model indices | reset_utils.py | Open |
