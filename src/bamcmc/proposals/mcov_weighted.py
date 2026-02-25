@@ -46,7 +46,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-from .common import COV_NUGGET
+from .common import unpack_operand, regularize_covariance, sample_diffusion, compute_log_det_ratio
 
 
 def mcov_weighted_proposal(operand):
@@ -77,21 +77,18 @@ def mcov_weighted_proposal(operand):
         log_hastings_ratio: Log density ratio for MH acceptance
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn, block_mode = operand
-    del grad_fn, block_mode, coupled_blocks  # Unused
+    op = unpack_operand(operand)
+    new_key, proposal_key = random.split(op.key)
 
-    new_key, proposal_key = random.split(key)
-
-    cov_mult = settings[SettingSlot.COV_MULT]
-    cov_beta = settings[SettingSlot.COV_BETA]
+    cov_mult = op.settings[SettingSlot.COV_MULT]
+    cov_beta = op.settings[SettingSlot.COV_BETA]
 
     # Get effective dimension (number of active parameters)
-    ndim = jnp.sum(block_mask)
+    ndim = jnp.sum(op.block_mask)
 
     # Scale covariance by cov_mult FIRST, then regularize
     # This makes d1 measure distance in "proposal scale" units
-    d = current_block.shape[0]
-    cov_scaled = cov_mult * step_cov + COV_NUGGET * jnp.eye(d)
+    cov_scaled = regularize_covariance(op.step_cov, cov_mult)
 
     # Cholesky decomposition of scaled covariance for sampling and Mahalanobis distance
     L = jnp.linalg.cholesky(cov_scaled)
@@ -100,7 +97,7 @@ def mcov_weighted_proposal(operand):
     k = 4.0 * jnp.sqrt(ndim)
 
     # === STEP 1: Compute d1 (distance with scaled covariance = cov_mult * Σ) ===
-    diff_current = (current_block - step_mean) * block_mask
+    diff_current = (op.current_block - op.step_mean) * op.block_mask
     y_current = jax.scipy.linalg.solve_triangular(L, diff_current, lower=True)
     d1_current = jnp.sqrt(jnp.sum(y_current**2))
 
@@ -122,18 +119,17 @@ def mcov_weighted_proposal(operand):
     alpha_current = d2_current / (d2_current + k + 1e-10)
 
     # === STEP 5: Compute proposal mean ===
-    prop_mean_current = alpha_current * current_block + (1.0 - alpha_current) * step_mean
+    prop_mean_current = alpha_current * op.current_block + (1.0 - alpha_current) * op.step_mean
 
     # === STEP 6: Sample from N(μ, g * Σ_scaled) where Σ_scaled = cov_mult * Σ ===
     # Since L is from Σ_scaled, final covariance is g * L @ L.T
     # So we sample: μ + sqrt(g) * L @ z where z ~ N(0, I)
-    noise = random.normal(proposal_key, shape=current_block.shape)
     scale_current = jnp.sqrt(g_current)
-    diffusion = scale_current * (L @ noise)
-    proposal = (prop_mean_current + diffusion) * block_mask + current_block * (1 - block_mask)
+    diffusion = sample_diffusion(proposal_key, L, op.current_block.shape, scale=scale_current)
+    proposal = (prop_mean_current + diffusion) * op.block_mask + op.current_block * (1 - op.block_mask)
 
     # === Compute quantities for reverse direction (proposal -> current) ===
-    diff_proposal = (proposal - step_mean) * block_mask
+    diff_proposal = (proposal - op.step_mean) * op.block_mask
     y_proposal = jax.scipy.linalg.solve_triangular(L, diff_proposal, lower=True)
     d1_proposal = jnp.sqrt(jnp.sum(y_proposal**2))
 
@@ -142,7 +138,7 @@ def mcov_weighted_proposal(operand):
     d2_proposal = d1_proposal / jnp.sqrt(g_proposal + 1e-10)
     alpha_proposal = d2_proposal / (d2_proposal + k + 1e-10)
 
-    prop_mean_proposal = alpha_proposal * proposal + (1.0 - alpha_proposal) * step_mean
+    prop_mean_proposal = alpha_proposal * proposal + (1.0 - alpha_proposal) * op.step_mean
 
     # === Hastings ratio ===
     # q(y|x) = N(y | μ_x, g_x * Σ_scaled)  where Σ_scaled = cov_mult * Σ
@@ -152,15 +148,15 @@ def mcov_weighted_proposal(operand):
     #                         - 0.5 * [||x - μ_y||²_{Σ_scaled} / g_y - ||y - μ_x||²_{Σ_scaled} / g_x]
 
     # Log-determinant term from different covariance scales
-    log_det_term = -0.5 * ndim * (jnp.log(g_proposal + 1e-10) - jnp.log(g_current + 1e-10))
+    log_det_term = compute_log_det_ratio(g_proposal, g_current, ndim)
 
     # Forward: y - μ_x (proposal minus forward proposal mean)
-    diff_forward = (proposal - prop_mean_current) * block_mask
+    diff_forward = (proposal - prop_mean_current) * op.block_mask
     y_forward = jax.scipy.linalg.solve_triangular(L, diff_forward, lower=True)
     dist_sq_forward = jnp.sum(y_forward**2) / g_current  # Divide by g_x
 
     # Reverse: x - μ_y (current minus reverse proposal mean)
-    diff_reverse = (current_block - prop_mean_proposal) * block_mask
+    diff_reverse = (op.current_block - prop_mean_proposal) * op.block_mask
     y_reverse = jax.scipy.linalg.solve_triangular(L, diff_reverse, lower=True)
     dist_sq_reverse = jnp.sum(y_reverse**2) / g_proposal  # Divide by g_y
 

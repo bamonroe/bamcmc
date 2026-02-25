@@ -30,6 +30,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
+from .common import unpack_operand
 
 
 def multinomial_proposal(operand):
@@ -61,23 +62,22 @@ def multinomial_proposal(operand):
         log_hastings_ratio: Log density ratio for MH acceptance
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn, block_mode = operand
-    del grad_fn, block_mode  # Unused by this proposal (discrete parameters have no gradient)
+    op = unpack_operand(operand)
 
     # Fixed maximum for array shapes - avoids recompilation
     MAX_CATEGORIES = 10
     GRID_MIN = 1
 
     # Get settings from array
-    uniform_weight = settings[SettingSlot.UNIFORM_WEIGHT]
-    n_categories = settings[SettingSlot.N_CATEGORIES].astype(jnp.int32)
+    uniform_weight = op.settings[SettingSlot.UNIFORM_WEIGHT]
+    n_categories = op.settings[SettingSlot.N_CATEGORIES].astype(jnp.int32)
 
-    block_size = current_block.shape[0]
+    block_size = op.current_block.shape[0]
 
-    new_key, proposal_key = random.split(key)
+    new_key, proposal_key = random.split(op.key)
 
     # Convert to 0-indexed categories, clip to valid range
-    coupled_indices = (coupled_blocks - GRID_MIN).astype(jnp.int32)
+    coupled_indices = (op.coupled_blocks - GRID_MIN).astype(jnp.int32)
     coupled_indices = jnp.clip(coupled_indices, 0, n_categories - 1)
 
     # Create category validity mask: 1 for valid categories, 0 for invalid
@@ -111,16 +111,16 @@ def multinomial_proposal(operand):
         # Sample category index (invalid categories have 0 probability)
         cat_idx = random.categorical(k, jnp.log(probs + 1e-10))
         # Convert back to grid value
-        return (cat_idx + GRID_MIN).astype(current_block.dtype)
+        return (cat_idx + GRID_MIN).astype(op.current_block.dtype)
 
     dim_keys = random.split(proposal_key, block_size)
     proposal_values = jax.vmap(sample_one_dim)((dim_keys, all_probs))
 
     # Apply mask: use proposal where mask is 1, current where mask is 0
-    proposal = jnp.where(block_mask > 0.5, proposal_values, current_block)
+    proposal = jnp.where(op.block_mask > 0.5, proposal_values, op.current_block)
 
     # Compute Hastings ratio
-    current_indices = (current_block - GRID_MIN).astype(jnp.int32)
+    current_indices = (op.current_block - GRID_MIN).astype(jnp.int32)
     current_indices = jnp.clip(current_indices, 0, n_categories - 1)
 
     proposal_indices = (proposal - GRID_MIN).astype(jnp.int32)
@@ -131,7 +131,7 @@ def multinomial_proposal(operand):
         log_p_current = jnp.log(probs[current_indices[dim_idx]] + 1e-10)
         log_p_proposal = jnp.log(probs[proposal_indices[dim_idx]] + 1e-10)
         # Only count active dimensions
-        mask_val = block_mask[dim_idx]
+        mask_val = op.block_mask[dim_idx]
         return mask_val * (log_p_current - log_p_proposal)
 
     log_hastings_ratio = jnp.sum(jax.vmap(get_log_prob)(jnp.arange(block_size)))

@@ -33,6 +33,13 @@ proposals needed, avoiding memory overhead from unused proposals.
 # Common utilities
 from .common import (
     COV_NUGGET,
+    Operand,
+    ProposalSetup,
+    unpack_operand,
+    prepare_proposal,
+    sample_diffusion,
+    hastings_ratio_fixed_cov,
+    hastings_ratio_scalar_g,
     regularize_covariance,
     compute_mahalanobis,
     compute_alpha_linear,
@@ -58,6 +65,13 @@ from .mcov_mode_vec import mcov_mode_vec_proposal
 __all__ = [
     # Common utilities
     'COV_NUGGET',
+    'Operand',
+    'ProposalSetup',
+    'unpack_operand',
+    'prepare_proposal',
+    'sample_diffusion',
+    'hastings_ratio_fixed_cov',
+    'hastings_ratio_scalar_g',
     'regularize_covariance',
     'compute_mahalanobis',
     'compute_alpha_linear',

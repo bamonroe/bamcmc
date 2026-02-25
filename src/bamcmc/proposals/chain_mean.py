@@ -25,6 +25,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as random
 
+from .common import unpack_operand, sample_diffusion
+
 
 def chain_mean_proposal(operand):
     """
@@ -50,26 +52,21 @@ def chain_mean_proposal(operand):
         log_hastings_ratio: Log density ratio for MH acceptance
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn, block_mode = operand
-    del grad_fn, block_mode  # Unused by this proposal
-    new_key, proposal_key = random.split(key)
+    op = unpack_operand(operand)
+    new_key, proposal_key = random.split(op.key)
 
-    L = jnp.linalg.cholesky(step_cov)
-    noise = random.normal(proposal_key, shape=current_block.shape)
-    perturbation = L @ noise
+    L = jnp.linalg.cholesky(op.step_cov)
+    perturbation = sample_diffusion(proposal_key, L, op.current_block.shape)
 
-    proposal = step_mean + (perturbation * block_mask)
+    proposal = op.step_mean + (perturbation * op.block_mask)
 
     # Hastings ratio: log(q(x_curr | μ)) - log(q(x_prop | μ))
-    diff_curr = (current_block - step_mean) * block_mask
-    diff_prop = (proposal - step_mean) * block_mask
+    diff_curr = (op.current_block - op.step_mean) * op.block_mask
+    diff_prop = (proposal - op.step_mean) * op.block_mask
 
     y_curr = jax.scipy.linalg.solve_triangular(L, diff_curr, lower=True)
     y_prop = jax.scipy.linalg.solve_triangular(L, diff_prop, lower=True)
 
-    dist_curr = jnp.sum(y_curr**2)
-    dist_prop = jnp.sum(y_prop**2)
-
-    log_hastings_ratio = 0.5 * (dist_prop - dist_curr)
+    log_hastings_ratio = 0.5 * (jnp.sum(y_prop**2) - jnp.sum(y_curr**2))
 
     return proposal, log_hastings_ratio, new_key

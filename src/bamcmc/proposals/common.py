@@ -8,21 +8,177 @@ Constants:
     COV_NUGGET: Small regularization constant for covariance matrix inversion
 
 Functions:
+    unpack_operand: Unpack the 9-element operand tuple into a named struct
+    prepare_proposal: Common setup (unpack, split key, regularize cov, Cholesky)
+    sample_diffusion: Generate diffusion noise from Cholesky factor
     regularize_covariance: Add nugget regularization to covariance matrix
     compute_mahalanobis: Compute Mahalanobis distance using Cholesky factor
     compute_alpha_g_scalar: Compute scalar alpha and g for mode-targeting proposals
     compute_alpha_g_vec: Compute per-parameter alpha and scalar g (vectorized)
     compute_log_det_ratio: Compute log-determinant ratio for Hastings correction
+    hastings_ratio_fixed_cov: Hastings ratio for proposals with state-dependent mean, fixed cov
+    hastings_ratio_scalar_g: Hastings ratio for proposals with scalar g covariance scaling
 """
 
+from collections import namedtuple
+
 import jax.numpy as jnp
+import jax.random as random
 import jax.scipy.linalg
+
+from ..settings import SettingSlot
 
 
 # Regularization constant for covariance matrix inversion
 # Small enough to not affect well-conditioned matrices,
 # large enough to prevent numerical issues with ill-conditioned ones
 COV_NUGGET = 1e-6
+
+
+# Named tuple for unpacked operand fields
+Operand = namedtuple('Operand', [
+    'key', 'current_block', 'step_mean', 'step_cov',
+    'coupled_blocks', 'block_mask', 'settings', 'grad_fn', 'block_mode',
+])
+
+# Named tuple for common proposal setup
+ProposalSetup = namedtuple('ProposalSetup', [
+    'op', 'new_key', 'proposal_key', 'cov_mult', 'L',
+])
+
+
+def unpack_operand(operand):
+    """
+    Unpack the 9-element operand tuple into a named struct.
+
+    Every proposal receives the same (key, current_block, step_mean, step_cov,
+    coupled_blocks, block_mask, settings, grad_fn, block_mode) tuple. This
+    helper avoids repeating the destructuring line in each proposal.
+
+    Args:
+        operand: 9-element tuple passed to proposal functions.
+
+    Returns:
+        Operand namedtuple with named fields.
+    """
+    return Operand(*operand)
+
+
+def prepare_proposal(operand):
+    """
+    Common proposal setup: unpack, split key, extract cov_mult, regularize, Cholesky.
+
+    Used by proposals that need a regularized, scaled covariance and its Cholesky
+    factor. Combines the 4-5 lines that ~10 proposals repeat identically.
+
+    Args:
+        operand: 9-element tuple passed to proposal functions.
+
+    Returns:
+        ProposalSetup namedtuple with fields:
+            op: Operand namedtuple
+            new_key: Updated random key for next step
+            proposal_key: Key for sampling this proposal
+            cov_mult: Covariance multiplier from settings
+            L: Lower Cholesky factor of (cov_mult * step_cov + nugget * I)
+    """
+    op = unpack_operand(operand)
+    new_key, proposal_key = random.split(op.key)
+    cov_mult = op.settings[SettingSlot.COV_MULT]
+    cov_reg = regularize_covariance(op.step_cov, cov_mult)
+    L = jnp.linalg.cholesky(cov_reg)
+    return ProposalSetup(op=op, new_key=new_key, proposal_key=proposal_key,
+                         cov_mult=cov_mult, L=L)
+
+
+def sample_diffusion(proposal_key, L, shape, scale=1.0):
+    """
+    Generate diffusion noise: scale * (L @ z) where z ~ N(0, I).
+
+    Args:
+        proposal_key: JAX random key for sampling.
+        L: Lower Cholesky factor (n, n).
+        shape: Shape for normal samples (n,).
+        scale: Scalar multiplier (e.g. sqrt(g) for covariance scaling).
+
+    Returns:
+        Diffusion vector (n,).
+    """
+    noise = random.normal(proposal_key, shape=shape)
+    return scale * (L @ noise)
+
+
+def hastings_ratio_fixed_cov(L, epsilon, proposal, current_block,
+                             prop_mean_fwd, prop_mean_rev, block_mask):
+    """
+    Hastings ratio for proposals with state-dependent mean but fixed covariance.
+
+    Used by MEAN_WEIGHTED and MODE_WEIGHTED. The covariance is the same in both
+    directions so only the quadratic forms differ (no log-determinant term).
+
+    log q(x|y) - log q(y|x) = -0.5 * [||x - mu_y||^2 - ||y - mu_x||^2] / eps^2
+
+    where ||.||^2 is measured with Sigma^{-1} (via Cholesky solve).
+
+    Args:
+        L: Lower Cholesky factor of covariance matrix.
+        epsilon: sqrt(cov_mult), scales the precision.
+        proposal: Proposed state.
+        current_block: Current state.
+        prop_mean_fwd: Forward proposal mean (mu_x).
+        prop_mean_rev: Reverse proposal mean (mu_y).
+        block_mask: Parameter mask.
+
+    Returns:
+        Log Hastings ratio (scalar).
+    """
+    diff_forward = (proposal - prop_mean_fwd) * block_mask
+    y_forward = jax.scipy.linalg.solve_triangular(L, diff_forward, lower=True) / epsilon
+
+    diff_reverse = (current_block - prop_mean_rev) * block_mask
+    y_reverse = jax.scipy.linalg.solve_triangular(L, diff_reverse, lower=True) / epsilon
+
+    return -0.5 * (jnp.sum(y_reverse**2) - jnp.sum(y_forward**2))
+
+
+def hastings_ratio_scalar_g(L, ndim, proposal, current_block,
+                            prop_mean_fwd, prop_mean_rev,
+                            g_fwd, g_rev, block_mask):
+    """
+    Hastings ratio for proposals with scalar g covariance scaling.
+
+    Used by MCOV_SMOOTH, MCOV_MODE, and MCOV_MODE_VEC. The covariance scales
+    as g * Sigma_base, producing both a log-determinant term and scaled
+    quadratic forms.
+
+    log q(x|y) - log q(y|x) = -0.5 * ndim * [log g_rev - log g_fwd]
+                             - 0.5 * [||x - mu_y||^2/g_rev - ||y - mu_x||^2/g_fwd]
+
+    Args:
+        L: Lower Cholesky factor of base covariance.
+        ndim: Effective number of dimensions (sum of block_mask).
+        proposal: Proposed state.
+        current_block: Current state.
+        prop_mean_fwd: Forward proposal mean.
+        prop_mean_rev: Reverse proposal mean.
+        g_fwd: Scalar covariance scale at current state.
+        g_rev: Scalar covariance scale at proposed state.
+        block_mask: Parameter mask.
+
+    Returns:
+        Log Hastings ratio (scalar).
+    """
+    log_det_term = compute_log_det_ratio(g_rev, g_fwd, ndim)
+
+    diff_forward = (proposal - prop_mean_fwd) * block_mask
+    y_forward = jax.scipy.linalg.solve_triangular(L, diff_forward, lower=True)
+    dist_sq_forward = jnp.sum(y_forward ** 2) / (g_fwd + 1e-10)
+
+    diff_reverse = (current_block - prop_mean_rev) * block_mask
+    y_reverse = jax.scipy.linalg.solve_triangular(L, diff_reverse, lower=True)
+    dist_sq_reverse = jnp.sum(y_reverse ** 2) / (g_rev + 1e-10)
+
+    return log_det_term - 0.5 * (dist_sq_reverse - dist_sq_forward)
 
 
 def regularize_covariance(cov, cov_mult=1.0, nugget=COV_NUGGET):

@@ -47,7 +47,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-from .common import COV_NUGGET
+from .common import unpack_operand, regularize_covariance
 
 
 def mcov_weighted_vec_proposal(operand):
@@ -66,20 +66,18 @@ def mcov_weighted_vec_proposal(operand):
         log_hastings_ratio: Log density ratio for MH acceptance
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn, block_mode = operand
-    del grad_fn, block_mode, coupled_blocks  # Unused
+    op = unpack_operand(operand)
+    new_key, proposal_key = random.split(op.key)
 
-    new_key, proposal_key = random.split(key)
-
-    cov_mult = settings[SettingSlot.COV_MULT]
-    cov_beta = settings[SettingSlot.COV_BETA]
+    cov_mult = op.settings[SettingSlot.COV_MULT]
+    cov_beta = op.settings[SettingSlot.COV_BETA]
 
     # Get effective dimension
-    ndim = jnp.sum(block_mask)
-    d = current_block.shape[0]
+    ndim = jnp.sum(op.block_mask)
+    d = op.current_block.shape[0]
 
     # Scale covariance by cov_mult, then regularize
-    cov_scaled = cov_mult * step_cov + COV_NUGGET * jnp.eye(d)
+    cov_scaled = regularize_covariance(op.step_cov, cov_mult)
 
     # Cholesky decomposition
     L = jnp.linalg.cholesky(cov_scaled)
@@ -90,7 +88,7 @@ def mcov_weighted_vec_proposal(operand):
     k_sq = k * k
 
     # === STEP 1: Compute per-parameter whitened distance d1_vec ===
-    diff_current = (current_block - step_mean) * block_mask
+    diff_current = (op.current_block - op.step_mean) * op.block_mask
     y_current = jax.scipy.linalg.solve_triangular(L, diff_current, lower=True)
     d1_vec_current = jnp.abs(y_current)  # Per-parameter distance
     d1_sq_current = d1_vec_current * d1_vec_current
@@ -116,18 +114,18 @@ def mcov_weighted_vec_proposal(operand):
     alpha_vec_current = d2_sq_current / (d2_sq_current + k_sq + 1e-10)
 
     # === STEP 5: Element-wise proposal mean ===
-    prop_mean_current = alpha_vec_current * current_block + (1.0 - alpha_vec_current) * step_mean
+    prop_mean_current = alpha_vec_current * op.current_block + (1.0 - alpha_vec_current) * op.step_mean
 
     # === STEP 6: Sample from N(mu, G @ Sigma_base @ G) ===
     # where G = diag(sqrt(g_vec))
     # Sample: mu + G @ L @ z = mu + sqrt_g_vec * (L @ z)
-    noise = random.normal(proposal_key, shape=current_block.shape)
+    noise = random.normal(proposal_key, shape=op.current_block.shape)
     L_noise = L @ noise
     diffusion = sqrt_g_current * L_noise  # Element-wise scaling
-    proposal = (prop_mean_current + diffusion) * block_mask + current_block * (1 - block_mask)
+    proposal = (prop_mean_current + diffusion) * op.block_mask + op.current_block * (1 - op.block_mask)
 
     # === Compute quantities for reverse direction ===
-    diff_proposal = (proposal - step_mean) * block_mask
+    diff_proposal = (proposal - op.step_mean) * op.block_mask
     y_proposal = jax.scipy.linalg.solve_triangular(L, diff_proposal, lower=True)
     d1_vec_proposal = jnp.abs(y_proposal)
     d1_sq_proposal = d1_vec_proposal * d1_vec_proposal
@@ -142,7 +140,7 @@ def mcov_weighted_vec_proposal(operand):
     # Quadratic alpha for reverse direction
     alpha_vec_proposal = d2_sq_proposal / (d2_sq_proposal + k_sq + 1e-10)
 
-    prop_mean_proposal = alpha_vec_proposal * proposal + (1.0 - alpha_vec_proposal) * step_mean
+    prop_mean_proposal = alpha_vec_proposal * proposal + (1.0 - alpha_vec_proposal) * op.step_mean
 
     # === Hastings ratio ===
     # q(y|x) = N(y | mu_x, G_x @ Sigma_base @ G_x)
@@ -160,12 +158,12 @@ def mcov_weighted_vec_proposal(operand):
     #                                     = ||L^{-1} @ ((y - mu) / sqrt_g)||^2
 
     # Forward: proposal given current
-    diff_forward = ((proposal - prop_mean_current) / sqrt_g_current) * block_mask
+    diff_forward = ((proposal - prop_mean_current) / sqrt_g_current) * op.block_mask
     y_forward = jax.scipy.linalg.solve_triangular(L, diff_forward, lower=True)
     dist_sq_forward = jnp.sum(y_forward**2)
 
     # Reverse: current given proposal
-    diff_reverse = ((current_block - prop_mean_proposal) / sqrt_g_proposal) * block_mask
+    diff_reverse = ((op.current_block - prop_mean_proposal) / sqrt_g_proposal) * op.block_mask
     y_reverse = jax.scipy.linalg.solve_triangular(L, diff_reverse, lower=True)
     dist_sq_reverse = jnp.sum(y_reverse**2)
 

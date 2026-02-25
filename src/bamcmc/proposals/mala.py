@@ -24,7 +24,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-from .common import COV_NUGGET
+from .common import unpack_operand, regularize_covariance, sample_diffusion
 
 
 def mala_proposal(operand):
@@ -58,36 +58,32 @@ def mala_proposal(operand):
         log_hastings_ratio: Log density ratio for MH acceptance
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn, block_mode = operand
-    del block_mode  # Unused by this proposal
-    new_key, proposal_key = random.split(key)
+    op = unpack_operand(operand)
+    new_key, proposal_key = random.split(op.key)
 
     # Use cov_mult for consistent interface with other proposals
     # Internally: epsilon = sqrt(cov_mult), so variance = epsilon² * Σ = cov_mult * Σ
-    cov_mult = settings[SettingSlot.COV_MULT]
+    cov_mult = op.settings[SettingSlot.COV_MULT]
     epsilon = jnp.sqrt(cov_mult)
 
-    d = current_block.shape[0]
-
     # Regularize covariance for numerical stability
-    cov_reg = step_cov + COV_NUGGET * jnp.eye(d)
+    cov_reg = regularize_covariance(op.step_cov)
 
     # Cholesky decomposition for sampling and density computation
     L = jnp.linalg.cholesky(cov_reg)
 
     # Gradient at current state
-    current_grad = grad_fn(current_block)
+    current_grad = op.grad_fn(op.current_block)
 
     # Preconditioned drift: (cov_mult/2) * Σ * ∇log p(x)
     # Equivalently: (ε²/2) * Σ * ∇log p(x)
     drift_current = 0.5 * cov_mult * (cov_reg @ current_grad)
 
     # Noise term: √cov_mult * L * z = ε * L * z
-    noise = random.normal(proposal_key, shape=current_block.shape)
-    diffusion = epsilon * (L @ noise)
+    diffusion = sample_diffusion(proposal_key, L, op.current_block.shape, scale=epsilon)
 
     # Proposal: x' = x + drift + noise (masked)
-    proposal = current_block + (drift_current + diffusion) * block_mask
+    proposal = op.current_block + (drift_current + diffusion) * op.block_mask
 
     # --- Hastings ratio computation ---
     # q(x'|x) = N(x' | x + drift(x), cov_mult * Σ)
@@ -95,29 +91,19 @@ def mala_proposal(operand):
     # log ratio = log q(x|x') - log q(x'|x)
 
     # Gradient at proposed state
-    proposed_grad = grad_fn(proposal)
+    proposed_grad = op.grad_fn(proposal)
 
     # Drift at proposed state
     drift_proposed = 0.5 * cov_mult * (cov_reg @ proposed_grad)
 
-    # Precision matrix scaled by 1/cov_mult
-    # For N(μ, cov_mult*Σ), quadratic form is (1/cov_mult) * (x-μ)ᵀ Σ⁻¹ (x-μ)
-    # We use solve_triangular for numerical stability
-
     # Forward: x' given x
-    # Mean of q(x'|x) is x + drift_current
-    diff_forward = (proposal - current_block - drift_current) * block_mask
+    diff_forward = (proposal - op.current_block - drift_current) * op.block_mask
     y_forward = jax.scipy.linalg.solve_triangular(L, diff_forward, lower=True) / epsilon
 
     # Reverse: x given x'
-    # Mean of q(x|x') is x' + drift_proposed
-    diff_reverse = (current_block - proposal - drift_proposed) * block_mask
+    diff_reverse = (op.current_block - proposal - drift_proposed) * op.block_mask
     y_reverse = jax.scipy.linalg.solve_triangular(L, diff_reverse, lower=True) / epsilon
 
-    # Log densities (up to normalizing constant which cancels)
-    log_q_forward = -0.5 * jnp.sum(y_forward**2)
-    log_q_reverse = -0.5 * jnp.sum(y_reverse**2)
-
-    log_hastings_ratio = log_q_reverse - log_q_forward
+    log_hastings_ratio = -0.5 * (jnp.sum(y_reverse**2) - jnp.sum(y_forward**2))
 
     return proposal, log_hastings_ratio, new_key

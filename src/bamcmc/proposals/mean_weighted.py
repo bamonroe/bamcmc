@@ -41,7 +41,8 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-from .common import COV_NUGGET
+from .common import (unpack_operand, regularize_covariance, sample_diffusion,
+                     compute_alpha_linear, hastings_ratio_fixed_cov)
 
 
 def mean_weighted_proposal(operand):
@@ -70,71 +71,47 @@ def mean_weighted_proposal(operand):
         log_hastings_ratio: Log density ratio for MH acceptance
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn, block_mode = operand
-    del grad_fn, block_mode  # Unused by this proposal
-    new_key, proposal_key = random.split(key)
+    op = unpack_operand(operand)
+    new_key, proposal_key = random.split(op.key)
 
-    cov_mult = settings[SettingSlot.COV_MULT]
+    cov_mult = op.settings[SettingSlot.COV_MULT]
     epsilon = jnp.sqrt(cov_mult)
 
     # Get effective dimension (number of active parameters)
-    ndim = jnp.sum(block_mask)
+    ndim = jnp.sum(op.block_mask)
 
-    # Regularize covariance for numerical stability
-    d = current_block.shape[0]
-    cov_reg = step_cov + COV_NUGGET * jnp.eye(d)
-
-    # Cholesky decomposition for sampling and Mahalanobis distance
+    # Regularize covariance (unscaled — epsilon applied separately)
+    cov_reg = regularize_covariance(op.step_cov)
     L = jnp.linalg.cholesky(cov_reg)
 
+    # Interpolation constant
+    k = 4.0 * jnp.sqrt(ndim)
+
     # --- Compute alpha for current state ---
-    # Mahalanobis distance from current state to coupled mean
-    diff_current = (current_block - step_mean) * block_mask
-    # Solve L * y = diff to get y, then ||y|| is Mahalanobis distance
+    diff_current = (op.current_block - op.step_mean) * op.block_mask
     y_current = jax.scipy.linalg.solve_triangular(L, diff_current, lower=True)
     d_current = jnp.sqrt(jnp.sum(y_current**2))
-
-    # Interpolation weight: α = d / (d + k) where k = 4 * sqrt(ndim)
-    k = 4.0 * jnp.sqrt(ndim)
-    alpha_current = d_current / (d_current + k + 1e-10)  # Avoid division by zero
+    alpha_current = compute_alpha_linear(d_current, k)
 
     # --- Compute proposal mean for forward direction ---
-    # μ_prop = α * x + (1 - α) * step_mean
-    prop_mean_current = alpha_current * current_block + (1.0 - alpha_current) * step_mean
+    prop_mean_current = alpha_current * op.current_block + (1.0 - alpha_current) * op.step_mean
 
     # --- Sample proposal ---
-    noise = random.normal(proposal_key, shape=current_block.shape)
-    diffusion = epsilon * (L @ noise)
-    proposal = (prop_mean_current + diffusion) * block_mask + current_block * (1 - block_mask)
+    diffusion = sample_diffusion(proposal_key, L, op.current_block.shape, scale=epsilon)
+    proposal = (prop_mean_current + diffusion) * op.block_mask + op.current_block * (1 - op.block_mask)
 
     # --- Compute alpha for proposed state (for Hastings ratio) ---
-    diff_proposal = (proposal - step_mean) * block_mask
+    diff_proposal = (proposal - op.step_mean) * op.block_mask
     y_proposal = jax.scipy.linalg.solve_triangular(L, diff_proposal, lower=True)
     d_proposal = jnp.sqrt(jnp.sum(y_proposal**2))
-    alpha_proposal = d_proposal / (d_proposal + k + 1e-10)
+    alpha_proposal = compute_alpha_linear(d_proposal, k)
 
     # --- Compute proposal mean for reverse direction ---
-    prop_mean_proposal = alpha_proposal * proposal + (1.0 - alpha_proposal) * step_mean
+    prop_mean_proposal = alpha_proposal * proposal + (1.0 - alpha_proposal) * op.step_mean
 
     # --- Hastings ratio ---
-    # q(y|x) = N(y | μ_x, ε²Σ) where μ_x = α_x * x + (1-α_x) * μ
-    # q(x|y) = N(x | μ_y, ε²Σ) where μ_y = α_y * y + (1-α_y) * μ
-    #
-    # log q(x|y) - log q(y|x) = -0.5/ε² * [||x - μ_y||²_Σ - ||y - μ_x||²_Σ]
-
-    # Forward: y - μ_x (proposal minus forward proposal mean)
-    diff_forward = (proposal - prop_mean_current) * block_mask
-    y_forward = jax.scipy.linalg.solve_triangular(L, diff_forward, lower=True) / epsilon
-
-    # Reverse: x - μ_y (current minus reverse proposal mean)
-    diff_reverse = (current_block - prop_mean_proposal) * block_mask
-    y_reverse = jax.scipy.linalg.solve_triangular(L, diff_reverse, lower=True) / epsilon
-
-    # Squared Mahalanobis distances (already scaled by 1/ε)
-    dist_sq_forward = jnp.sum(y_forward**2)
-    dist_sq_reverse = jnp.sum(y_reverse**2)
-
-    # log q(x|y) - log q(y|x) = -0.5 * (dist_sq_reverse - dist_sq_forward)
-    log_hastings_ratio = -0.5 * (dist_sq_reverse - dist_sq_forward)
+    log_hastings_ratio = hastings_ratio_fixed_cov(
+        L, epsilon, proposal, op.current_block,
+        prop_mean_current, prop_mean_proposal, op.block_mask)
 
     return proposal, log_hastings_ratio, new_key

@@ -26,7 +26,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-from .common import COV_NUGGET
+from .common import unpack_operand, regularize_covariance, sample_diffusion
 
 
 def mean_mala_proposal(operand):
@@ -59,61 +59,50 @@ def mean_mala_proposal(operand):
         log_hastings_ratio: Log density ratio for MH acceptance
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn, block_mode = operand
-    del block_mode  # Unused by this proposal
-    new_key, proposal_key = random.split(key)
+    op = unpack_operand(operand)
+    new_key, proposal_key = random.split(op.key)
 
     # Use cov_mult for consistent interface with other proposals
-    cov_mult = settings[SettingSlot.COV_MULT]
+    cov_mult = op.settings[SettingSlot.COV_MULT]
     epsilon = jnp.sqrt(cov_mult)
 
-    d = current_block.shape[0]
-
     # Regularize covariance for numerical stability
-    cov_reg = step_cov + COV_NUGGET * jnp.eye(d)
+    cov_reg = regularize_covariance(op.step_cov)
 
     # Cholesky decomposition for sampling and density computation
     L = jnp.linalg.cholesky(cov_reg)
 
     # Gradient at coupled mean (NOT at current state)
     # This is the key difference from standard MALA
-    mean_grad = grad_fn(step_mean)
+    mean_grad = op.grad_fn(op.step_mean)
 
     # Preconditioned drift: (cov_mult/2) * Σ * ∇log p(μ)
     drift = 0.5 * cov_mult * (cov_reg @ mean_grad)
 
     # Proposal center: c = μ + drift
-    center = step_mean + drift
+    center = op.step_mean + drift
 
     # Noise term: √cov_mult * L * z = ε * L * z
-    noise = random.normal(proposal_key, shape=current_block.shape)
-    diffusion = epsilon * (L @ noise)
+    diffusion = sample_diffusion(proposal_key, L, op.current_block.shape, scale=epsilon)
 
     # Proposal: x' = c + noise (masked)
     # Note: proposal is centered on c, NOT on current_block
-    proposal = (center + diffusion) * block_mask + current_block * (1 - block_mask)
+    proposal = (center + diffusion) * op.block_mask + op.current_block * (1 - op.block_mask)
 
     # --- Hastings ratio computation ---
     # Both q(x'|x) and q(x|x') are N(· | c, cov_mult * Σ)
     # They're centered on the SAME point c, so:
     # log q(x|x') - log q(x'|x) = (1/2ε²)[||x'-c||²_Σ - ||x-c||²_Σ]
 
-    # Compute Mahalanobis distances using solve_triangular for stability
-    # ||y||²_Σ = y^T Σ^{-1} y = ||L^{-1} y||²
-
-    diff_current = (current_block - center) * block_mask
-    diff_proposal = (proposal - center) * block_mask
+    diff_current = (op.current_block - center) * op.block_mask
+    diff_proposal = (proposal - center) * op.block_mask
 
     # L^{-1} * diff, then scale by 1/ε for the full (1/cov_mult) factor
     y_current = jax.scipy.linalg.solve_triangular(L, diff_current, lower=True) / epsilon
     y_proposal = jax.scipy.linalg.solve_triangular(L, diff_proposal, lower=True) / epsilon
 
-    # Squared Mahalanobis distances (scaled by 1/cov_mult)
-    dist_sq_current = jnp.sum(y_current**2)
-    dist_sq_proposal = jnp.sum(y_proposal**2)
-
     # Hastings correction: penalize moves away from center
     # log q(x|x') - log q(x'|x) = 0.5 * (dist_sq_proposal - dist_sq_current)
-    log_hastings_ratio = 0.5 * (dist_sq_proposal - dist_sq_current)
+    log_hastings_ratio = 0.5 * (jnp.sum(y_proposal**2) - jnp.sum(y_current**2))
 
     return proposal, log_hastings_ratio, new_key

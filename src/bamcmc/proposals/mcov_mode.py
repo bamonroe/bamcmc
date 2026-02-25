@@ -49,12 +49,11 @@ Example behavior:
     d=20:  α=0.98, g=0.20  (full rescue mode)
 """
 
-import jax
 import jax.numpy as jnp
-import jax.random as random
 
 from ..settings import SettingSlot
-from .common import COV_NUGGET, compute_alpha_g_scalar
+from .common import (prepare_proposal, sample_diffusion, compute_mahalanobis,
+                     compute_alpha_g_scalar, hastings_ratio_scalar_g)
 
 
 def mcov_mode_proposal(operand):
@@ -73,78 +72,42 @@ def mcov_mode_proposal(operand):
         log_hastings_ratio: Log density ratio for MH acceptance
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn, block_mode = operand
-    del grad_fn, coupled_blocks, step_mean  # Unused - we use block_mode instead of step_mean
+    ps = prepare_proposal(operand)
+    op = ps.op
 
-    new_key, proposal_key = random.split(key)
-
-    cov_mult = settings[SettingSlot.COV_MULT]
-    k_g = settings[SettingSlot.K_G]
-    k_alpha = settings[SettingSlot.K_ALPHA]
+    k_g = op.settings[SettingSlot.K_G]
+    k_alpha = op.settings[SettingSlot.K_ALPHA]
 
     # Get dimensions
-    ndim = jnp.sum(block_mask)
-    block_size = current_block.shape[0]
-
-    # Scale covariance by cov_mult, then regularize
-    cov_scaled = cov_mult * step_cov + COV_NUGGET * jnp.eye(block_size)
-
-    # Cholesky decomposition for sampling and Mahalanobis distance
-    L = jnp.linalg.cholesky(cov_scaled)
+    ndim = jnp.sum(op.block_mask)
 
     # === STEP 1: Compute Mahalanobis distance from MODE ===
-    diff_current = (current_block - block_mode) * block_mask
-    # d² = diff' Σ^{-1} diff = ||L^{-1} diff||²
-    y_current = jax.scipy.linalg.solve_triangular(L, diff_current, lower=True)
-    d_current = jnp.sqrt(jnp.sum(y_current ** 2) + 1e-10)
+    diff_current = (op.current_block - op.block_mode) * op.block_mask
+    _, d_current = compute_mahalanobis(diff_current, ps.L)
 
     # === STEP 2: Compute scalar alpha and g for current state ===
     alpha_current, g_current = compute_alpha_g_scalar(d_current, k_g, k_alpha)
     sqrt_g_current = jnp.sqrt(jnp.maximum(g_current, 1e-10))
 
     # === STEP 3: Compute proposal mean (uniform interpolation toward MODE) ===
-    prop_mean_current = alpha_current * current_block + (1.0 - alpha_current) * block_mode
+    prop_mean_current = alpha_current * op.current_block + (1.0 - alpha_current) * op.block_mode
 
     # === STEP 4: Sample from N(μ_prop, g × Σ_base) ===
-    # Sample: μ + sqrt(g) × L × z
-    noise = random.normal(proposal_key, shape=current_block.shape)
-    L_noise = L @ noise
-    diffusion = sqrt_g_current * L_noise
-    proposal = (prop_mean_current + diffusion) * block_mask + current_block * (1 - block_mask)
+    diffusion = sample_diffusion(ps.proposal_key, ps.L, op.current_block.shape, scale=sqrt_g_current)
+    proposal = (prop_mean_current + diffusion) * op.block_mask + op.current_block * (1 - op.block_mask)
 
     # === STEP 5: Compute quantities for reverse direction ===
-    diff_proposal = (proposal - block_mode) * block_mask
-    y_proposal = jax.scipy.linalg.solve_triangular(L, diff_proposal, lower=True)
-    d_proposal = jnp.sqrt(jnp.sum(y_proposal ** 2) + 1e-10)
+    diff_proposal = (proposal - op.block_mode) * op.block_mask
+    _, d_proposal = compute_mahalanobis(diff_proposal, ps.L)
 
     alpha_proposal, g_proposal = compute_alpha_g_scalar(d_proposal, k_g, k_alpha)
-    sqrt_g_proposal = jnp.sqrt(jnp.maximum(g_proposal, 1e-10))
 
-    prop_mean_proposal = alpha_proposal * proposal + (1.0 - alpha_proposal) * block_mode
+    prop_mean_proposal = alpha_proposal * proposal + (1.0 - alpha_proposal) * op.block_mode
 
     # === STEP 6: Hastings ratio ===
-    # q(y|x) = N(y | μ_x, g_x × Σ_base)
-    # q(x|y) = N(x | μ_y, g_y × Σ_base)
-    #
-    # Log-determinant term:
-    # log det(g × Σ) = ndim × log(g) + log det(Σ)
-    # The log det(Σ) cancels between forward and reverse.
-    log_det_term = -0.5 * ndim * (jnp.log(g_proposal + 1e-10) - jnp.log(g_current + 1e-10))
+    log_hastings_ratio = hastings_ratio_scalar_g(
+        ps.L, ndim, proposal, op.current_block,
+        prop_mean_current, prop_mean_proposal,
+        g_current, g_proposal, op.block_mask)
 
-    # Quadratic form for N(y | μ, g × Σ):
-    # ||y - μ||²_{(g × Σ)^{-1}} = (1/g) × ||y - μ||²_{Σ^{-1}}
-    #                           = (1/g) × ||L^{-1}(y - μ)||²
-
-    # Forward: proposal given current
-    diff_forward = (proposal - prop_mean_current) * block_mask
-    y_forward = jax.scipy.linalg.solve_triangular(L, diff_forward, lower=True)
-    dist_sq_forward = jnp.sum(y_forward ** 2) / (g_current + 1e-10)
-
-    # Reverse: current given proposal
-    diff_reverse = (current_block - prop_mean_proposal) * block_mask
-    y_reverse = jax.scipy.linalg.solve_triangular(L, diff_reverse, lower=True)
-    dist_sq_reverse = jnp.sum(y_reverse ** 2) / (g_proposal + 1e-10)
-
-    log_hastings_ratio = log_det_term - 0.5 * (dist_sq_reverse - dist_sq_forward)
-
-    return proposal, log_hastings_ratio, new_key
+    return proposal, log_hastings_ratio, ps.new_key

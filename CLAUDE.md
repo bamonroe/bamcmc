@@ -271,16 +271,16 @@ All 13 proposals now have test coverage (65 total tests in test_proposals.py).
 
 ### Medium Priority
 
-#### 12. Proposal Code Duplication
+#### 12. ~~Proposal Code Duplication~~ (FIXED)
 
-**Status**: Open. All 13 proposal files repeat identical boilerplate (~30-40 lines each):
-1. Unpack 9-element operand tuple
-2. Delete unused parameters
-3. Split random key and generate proposal key
-4. Extract settings using `SettingSlot` enum
-5. Compute Cholesky decomposition and sample noise
+**Status**: Fixed. Extracted shared helpers into `src/bamcmc/proposals/common.py`:
+- `unpack_operand()`: Unpacks 9-element operand tuple into `Operand` namedtuple (used by all 13 proposals)
+- `prepare_proposal()`: Common setup — unpack, split key, extract cov_mult, regularize cov, Cholesky (used by ~6 proposals)
+- `sample_diffusion()`: Generates `scale * (L @ normal(key, shape))` noise (used by ~10 proposals)
+- `hastings_ratio_fixed_cov()`: Hastings ratio for state-dependent mean with fixed covariance (used by mean_weighted, mode_weighted)
+- `hastings_ratio_scalar_g()`: Hastings ratio with scalar g covariance scaling (used by mcov_smooth, mcov_mode, mcov_mode_vec)
 
-Extracting shared helpers into `src/bamcmc/proposals/common.py` (e.g., operand unpacking, Cholesky + noise generation) would reduce per-proposal boilerplate and make adding new proposals less error-prone.
+All 13 proposals refactored to use these helpers. Saves ~5-15 lines per proposal.
 
 #### 13. Inconsistent Epsilon/Nugget Constants
 
@@ -342,7 +342,7 @@ Major files: `diagnostics.py` (23), `single_run.py` (24), `posterior_benchmark.p
 | ~~High~~ | ~~Test untested proposals~~ | tests/test_proposals.py | **FIXED** |
 | ~~High~~ | ~~Test reset_utils~~ | tests/test_reset_utils.py | **FIXED** |
 | ~~High~~ | ~~Test tempering & coupled transform~~ | test_tempering_sampling.py | **FIXED** |
-| Medium | Proposal code duplication | proposals/*.py | Open |
+| ~~Medium~~ | ~~Proposal code duplication~~ | proposals/*.py, common.py | **FIXED** |
 | Medium | Inconsistent epsilon/nugget constants | scan.py, proposals/common.py | Open |
 | Medium | Type annotations on public API | checkpoint_io.py, history_processing.py, etc. | Open |
 | Medium | Test benchmark/hash systems | posterior_benchmark.py, posterior_hash.py | Open |

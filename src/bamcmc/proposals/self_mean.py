@@ -25,6 +25,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
+from .common import unpack_operand, sample_diffusion
 
 
 def self_mean_proposal(operand):
@@ -52,21 +53,18 @@ def self_mean_proposal(operand):
         log_hastings_ratio: 0.0 (symmetric proposal)
         new_key: Updated random key
     """
-    key, current_block, step_mean, step_cov, coupled_blocks, block_mask, settings, grad_fn, block_mode = operand
-    del grad_fn, block_mode  # Unused by this proposal
-    new_key, proposal_key = random.split(key)
+    op = unpack_operand(operand)
+    new_key, proposal_key = random.split(op.key)
 
-    cov_mult = settings[SettingSlot.COV_MULT]
+    cov_mult = op.settings[SettingSlot.COV_MULT]
 
     # Scale covariance: sqrt(cov_mult) scales the Cholesky factor
     # so that L @ L.T = cov_mult * Σ
-    L = jnp.linalg.cholesky(step_cov)
-    scaled_L = L * jnp.sqrt(cov_mult)
+    L = jnp.linalg.cholesky(op.step_cov)
+    perturbation = sample_diffusion(proposal_key, L, op.current_block.shape,
+                                    scale=jnp.sqrt(cov_mult))
 
-    noise = random.normal(proposal_key, shape=current_block.shape)
-    perturbation = scaled_L @ noise
-
-    proposal = current_block + (perturbation * block_mask)
+    proposal = op.current_block + (perturbation * op.block_mask)
     log_hastings_ratio = 0.0
 
     return proposal, log_hastings_ratio, new_key
