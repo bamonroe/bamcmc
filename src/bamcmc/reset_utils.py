@@ -19,6 +19,7 @@ Usage:
     )
 """
 
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -78,6 +79,10 @@ def get_discrete_param_indices(model_type: str, n_subjects: int) -> List[int]:
         pass
 
     # Legacy hardcoded logic - extract just z_indices
+    warnings.warn(
+        f"Using hardcoded parameter indices for '{model_type}'. "
+        "Register 'get_discrete_param_indices' in the posterior config instead.",
+        DeprecationWarning, stacklevel=2)
     special = _get_legacy_special_indices(model_type, n_subjects)
     return special.get('z_indices', [])
 

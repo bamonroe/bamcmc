@@ -144,6 +144,16 @@ class TestGetDiscreteParamIndices:
         expected = [s * 14 + 13 for s in range(n_subjects)]
         assert indices == expected
 
+    def test_legacy_fallback_emits_deprecation_warning(self):
+        """Legacy hardcoded path should emit DeprecationWarning."""
+        import warnings as _w
+        with _w.catch_warnings(record=True) as w:
+            _w.simplefilter("always")
+            get_discrete_param_indices('mixture_3model_bhm', 2)
+            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(deprecation_warnings) >= 1
+            assert "hardcoded" in str(deprecation_warnings[0].message).lower()
+
 
 class TestLegacySpecialIndices:
     """Test the legacy special indices function directly."""
