@@ -134,6 +134,7 @@ def attempt_temperature_swaps(
         # For each potential pair position, compute acceptance
         # Pair i: cold_sorted[i] with hot_shuffled[i]
         def compute_swap(pair_idx):
+            """Compute swap acceptance for one cold-hot chain pair."""
             cold_idx = cold_sorted[pair_idx]
             hot_idx = hot_shuffled[pair_idx]
 
@@ -172,6 +173,7 @@ def attempt_temperature_swaps(
         # Apply swaps: for each accepted swap, exchange temperature assignments
         # This needs to be done carefully to avoid conflicts
         def apply_swap(ta, pair_data):
+            """Apply a single swap by exchanging temperature assignments."""
             cold_idx, hot_idx, should_swap = pair_data
             # Swap: cold chain gets hot temp, hot chain gets cold temp
             new_ta = jax.lax.cond(

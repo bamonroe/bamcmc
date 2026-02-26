@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Union
 from typing import TypedDict
 
 from ..batch_specs import BlockSpec, MAX_PROPOSAL_GROUPS
@@ -19,8 +19,15 @@ from ..settings import build_settings_matrix, MAX_SETTINGS, SETTING_DEFAULTS, Se
 
 
 class MCMCData(TypedDict):
-    """Type definition for MCMC data dict. See docs/configuration.md for constraints."""
-    static: Tuple[int, ...]
+    """Type definition for MCMC data dict. See docs/configuration.md for constraints.
+
+    Fields:
+        static: Hashable Python scalars (int, float, str, bool). These become
+            JAX compile-time constants — changing them triggers recompilation.
+        int: Integer arrays (C-contiguous np.ndarray). Use empty tuple if unused.
+        float: Float arrays (C-contiguous np.ndarray). Use empty tuple if unused.
+    """
+    static: Tuple[Union[int, float, str, bool], ...]
     int: Tuple[np.ndarray, ...]
     float: Tuple[np.ndarray, ...]
 

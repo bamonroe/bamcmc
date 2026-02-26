@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Callable, List
 from enum import IntEnum
 import numpy as np
+import logging
+
+logger = logging.getLogger('bamcmc')
 
 
 # Maximum number of proposal groups per block (for JAX fixed-shape arrays)
@@ -605,5 +608,9 @@ def summarize_blocks(specs: List[BlockSpec]) -> str:
 
 
 def print_block_summary(specs: List[BlockSpec]) -> None:
-    """Print a summary of block specifications."""
-    print(summarize_blocks(specs))
+    """Log a human-readable summary of block specifications.
+
+    Displays total blocks/parameters, breakdown by sampler type,
+    and per-block details. Useful for validating configuration before sampling.
+    """
+    logger.info(summarize_blocks(specs))
