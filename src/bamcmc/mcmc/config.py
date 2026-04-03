@@ -117,7 +117,7 @@ def _build_user_config(mcmc_config: Dict[str, Any]) -> Dict[str, Any]:
     """Extract and validate user configuration from raw mcmc_config."""
     mcmc_config = clean_config(mcmc_config)
 
-    use_double = mcmc_config.get('use_double', True)
+    use_double = mcmc_config.get('use_double')
     posterior_id = mcmc_config.get('posterior_id')
     rng_seed = mcmc_config.get('rng_seed', 42)
 

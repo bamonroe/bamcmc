@@ -174,7 +174,7 @@ def build_block_arrays(specs: List[BlockSpec], start_idx: int = 0) -> BlockArray
     # Build index and mask arrays
     indices = np.full((num_blocks, max_size), -1, dtype=np.int32)
     types = np.zeros(num_blocks, dtype=np.int32)
-    masks = np.zeros((num_blocks, max_size), dtype=np.float32)
+    masks = np.zeros((num_blocks, max_size), dtype=np.float64)
 
     current_param = start_idx
     for i, spec in enumerate(specs):
@@ -205,8 +205,8 @@ def build_block_arrays(specs: List[BlockSpec], start_idx: int = 0) -> BlockArray
     group_starts = np.zeros((num_blocks, MAX_PROPOSAL_GROUPS), dtype=np.int32)
     group_ends = np.zeros((num_blocks, MAX_PROPOSAL_GROUPS), dtype=np.int32)
     group_proposal_types = np.zeros((num_blocks, MAX_PROPOSAL_GROUPS), dtype=np.int32)
-    group_settings = np.zeros((num_blocks, MAX_PROPOSAL_GROUPS, MAX_SETTINGS), dtype=np.float32)
-    group_masks = np.zeros((num_blocks, MAX_PROPOSAL_GROUPS), dtype=np.float32)
+    group_settings = np.zeros((num_blocks, MAX_PROPOSAL_GROUPS, MAX_SETTINGS), dtype=np.float64)
+    group_masks = np.zeros((num_blocks, MAX_PROPOSAL_GROUPS), dtype=np.float64)
     num_groups_arr = np.zeros(num_blocks, dtype=np.int32)
 
     # Build remapped proposal_types and group arrays

@@ -15,7 +15,7 @@ def clean_config(mcmc_config):
 
     # Define Defaults and retrieve values from dictionary (all lowercase)
     mcmc_config.setdefault('gpu_preallocation', False)
-    mcmc_config.setdefault('use_double', False)
+    mcmc_config.setdefault('use_double', True)
     mcmc_config.setdefault('posterior_id', 'normal_10_5')
     mcmc_config.setdefault('thin_iteration', 100)
     mcmc_config.setdefault('num_collect', 10)

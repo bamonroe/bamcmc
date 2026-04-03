@@ -72,7 +72,7 @@ def build_settings_matrix(specs):
     n_blocks = len(specs)
 
     # Initialize with defaults
-    matrix = np.zeros((n_blocks, MAX_SETTINGS), dtype=np.float32)
+    matrix = np.zeros((n_blocks, MAX_SETTINGS), dtype=np.float64)
     for slot, default in SETTING_DEFAULTS.items():
         matrix[:, slot] = default
 

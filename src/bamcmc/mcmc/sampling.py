@@ -334,7 +334,7 @@ def metropolis_block_step(operand, log_post_fn, grad_log_post_fn, used_proposal_
     accept = log_uniform < safe_ratio
     next_state = jnp.where(accept, proposed_state, chain_state)
     chosen_lp = jnp.where(accept, safe_lp_proposed, safe_lp_current)
-    accepted = jnp.float32(accept)
+    accepted = accept.astype(chain_state.dtype)
 
     return next_state, new_key, chosen_lp, accepted
 
@@ -358,7 +358,7 @@ def direct_block_step(operand, direct_sampler_fn):
     # This prevents bad samples from propagating through the chain
     is_finite = jnp.isfinite(new_state)
     new_state = jnp.where(is_finite, new_state, chain_state)
-    accepted = jnp.float32(1.0)
+    accepted = jnp.ones((), dtype=chain_state.dtype)
     return new_state, new_key, 0.0, accepted
 
 
@@ -456,7 +456,7 @@ def coupled_transform_step(operand, log_post_fn, coupled_transform_fn, used_prop
     accept = log_uniform < safe_ratio
     next_state = jnp.where(accept, proposed_state, chain_state)
     chosen_lp = jnp.where(accept, safe_lp_proposed, safe_lp_current)
-    accepted = jnp.float32(accept)
+    accepted = accept.astype(chain_state.dtype)
 
     return next_state, new_key, chosen_lp, accepted
 
