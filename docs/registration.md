@@ -31,7 +31,7 @@ register_posterior('my_model', {
 Computes log posterior for a parameter block.
 
 ```python
-def log_posterior(chain_state, param_indices, data):
+def log_posterior(chain_state, param_indices, data, beta=1.0):
     """
     Log posterior for a parameter block.
 
@@ -39,12 +39,15 @@ def log_posterior(chain_state, param_indices, data):
         chain_state: Full parameter vector (1D JAX array)
         param_indices: Indices of parameters in this block (1D JAX array)
         data: Data dict
+        beta: Inverse temperature for parallel tempering (default: 1.0)
 
     Returns:
         Scalar log posterior value
     """
     params = chain_state[param_indices]
-    return compute_log_prob(params, data)
+    log_prior = compute_prior(params, data)
+    log_lik = compute_likelihood(params, data)
+    return log_prior + beta * log_lik
 ```
 
 See [Log-Posterior Requirements](./log_posterior.md) for details.
@@ -101,10 +104,11 @@ def initial_vector(mcmc_config, data):
         data: Data dict
 
     Returns:
-        1D array of initial values, shape (K * n_params,)
-        where K = num_superchains
+        1D array of initial values, shape (num_chains * n_params,)
+        where num_chains = num_chains_a + num_chains_b
     """
-    K = mcmc_config['num_superchains']
+    num_chains = mcmc_config['num_chains']
+    K = mcmc_config.get('num_superchains', num_chains)
     n_subjects = data['static'][0]
     params_per_subject = 3
     n_hyper = 4
@@ -115,13 +119,17 @@ def initial_vector(mcmc_config, data):
     rng = np.random.default_rng(mcmc_config['rng_seed'])
     init = rng.normal(size=(K, n_params))
 
-    # Flatten for the sampler
+    # Pad to num_chains rows (backend replicates superchain values across subchains)
+    if K < num_chains:
+        full_init = np.zeros((num_chains, n_params))
+        full_init[:K] = init
+        return full_init.flatten()
     return init.flatten()
 ```
 
 #### Notes on Initial Values
 
-1. **Shape**: Return `(K * n_params,)` where K = `num_superchains`
+1. **Shape**: Return `(num_chains * n_params,)` where `num_chains = num_chains_a + num_chains_b`. Generate K = `num_superchains` distinct starting points and pad to `num_chains` rows if K < num_chains.
 2. **Diversity**: Each of the K superchains should have different starting values
 3. **Constraints**: Ensure values satisfy any constraints (e.g., positive variances)
 4. **NCP models**: Initialize epsilon values near 0 (standard normal)

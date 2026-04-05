@@ -5,7 +5,7 @@ The `log_posterior` function is the core of your model - it computes the log pos
 ## Basic Signature
 
 ```python
-def log_posterior(chain_state, param_indices, data):
+def log_posterior(chain_state, param_indices, data, beta=1.0):
     """
     Compute log posterior for a parameter block.
 
@@ -13,6 +13,9 @@ def log_posterior(chain_state, param_indices, data):
         chain_state: Full parameter vector (1D array of all parameters)
         param_indices: Indices of parameters in this block (1D array)
         data: Data dict with 'static', 'int', 'float' fields
+        beta: Inverse temperature for parallel tempering (default: 1.0).
+              Multiplies the likelihood term. Required even when not
+              using tempering (just use the default).
 
     Returns:
         Scalar log posterior value (float)
@@ -24,7 +27,7 @@ def log_posterior(chain_state, param_indices, data):
     log_prior = compute_prior(params)
     log_lik = compute_likelihood(params, data)
 
-    return log_prior + log_lik
+    return log_prior + beta * log_lik
 ```
 
 ## Requirements
@@ -35,15 +38,15 @@ The function must be a pure function (no side effects):
 
 ```python
 # GOOD - pure function
-def log_posterior(chain_state, param_indices, data):
-    return compute_log_prob(chain_state, param_indices, data)
+def log_posterior(chain_state, param_indices, data, beta=1.0):
+    return compute_log_prob(chain_state, param_indices, data, beta)
 
 # BAD - modifies global state
 counter = 0
-def log_posterior(chain_state, param_indices, data):
+def log_posterior(chain_state, param_indices, data, beta=1.0):
     global counter
     counter += 1  # Side effect!
-    return compute_log_prob(chain_state, param_indices, data)
+    return compute_log_prob(chain_state, param_indices, data, beta)
 ```
 
 ### 2. JAX Compatible

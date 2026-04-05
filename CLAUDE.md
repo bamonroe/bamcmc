@@ -88,9 +88,9 @@ bamcmc/
 
 ### Posterior Registration
 
-Models are registered before sampling. Required functions: `log_posterior`, `batch_type`, `initial_vector`, `direct_sampler`.
+Models are registered before sampling. Required functions: `log_posterior`, `batch_type`, `initial_vector`. Optional: `direct_sampler` (needed for MH-only models or models with `DIRECT_CONJUGATE` blocks), `coupled_transform_dispatch` (needed for `COUPLED_TRANSFORM` blocks).
 
-**CRITICAL**: `initial_vector` must return size `(num_chains_a + num_chains_b) * n_params` (NOT `num_superchains`). `direct_sampler` must return valid values even for MH-only models (JAX traces all branches).
+**CRITICAL**: `initial_vector` must return size `(num_chains_a + num_chains_b) * n_params` (NOT `num_superchains`). `direct_sampler` must return valid values even for MH-only models (JAX traces all branches). The `log_posterior` signature must include `beta=1.0` for parallel tempering support.
 
 -> See [docs/registration.md](docs/registration.md) for full details.
 

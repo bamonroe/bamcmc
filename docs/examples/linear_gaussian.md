@@ -104,7 +104,7 @@ def log_posterior(chain_state, param_indices, data, beta=1.0):
     return log_prior + beta * log_lik
 
 
-def batch_specs(mcmc_config, data):
+def batch_type(mcmc_config, data):
     """One block containing all coefficients."""
     n_predictors = data["static"][1]
     return [
@@ -152,7 +152,7 @@ def direct_sampler(key, chain_state, param_indices, data):
 ```python
 register_posterior("linear_gaussian", {
     "log_posterior": log_posterior,
-    "batch_type": batch_specs,
+    "batch_type": batch_type,
     "initial_vector": initial_vector,
     "direct_sampler": direct_sampler,
 })

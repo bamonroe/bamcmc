@@ -8,11 +8,11 @@ Settings control proposal behavior. They are specified in `BlockSpec.settings` o
 |---------|------|---------|---------|-------------|
 | `cov_mult` | float | 1.0 | Most proposals | Covariance multiplier |
 | `chain_prob` | float | 0.5 | MIXTURE | Probability of chain_mean |
-| `cov_beta` | float | 1.0 | MCOV_* proposals | Covariance scaling strength |
+| `cov_beta` | float | 1.0 | MCOV_WEIGHTED, MCOV_WEIGHTED_VEC | Covariance scaling strength |
 | `n_categories` | int | 4 | MULTINOMIAL | Number of discrete categories |
 | `uniform_weight` | float | 0.4 | MULTINOMIAL | Weight of uniform distribution |
-| `k_g` | float | 10.0 | MCOV_SMOOTH | Controls g decay rate |
-| `k_alpha` | float | 3.0 | MCOV_SMOOTH | Controls alpha rise rate |
+| `k_g` | float | 10.0 | MCOV_SMOOTH, MCOV_MODE, MCOV_MODE_VEC | Controls g decay rate |
+| `k_alpha` | float | 3.0 | MCOV_SMOOTH, MCOV_MODE, MCOV_MODE_VEC | Controls alpha rise rate |
 
 ---
 
@@ -64,7 +64,7 @@ settings={'chain_prob': 0.2}  # 20% independent, 80% random walk
 
 **Type:** float
 **Default:** 1.0
-**Used by:** MCOV_WEIGHTED, MCOV_WEIGHTED_VEC, MCOV_SMOOTH, MCOV_MODE, MCOV_MODE_VEC
+**Used by:** MCOV_WEIGHTED, MCOV_WEIGHTED_VEC
 
 Controls how proposal covariance scales with distance from coupled mean:
 
@@ -144,7 +144,7 @@ settings={'n_categories': 2, 'uniform_weight': 0.2}
 
 **Type:** float
 **Default:** 10.0
-**Used by:** MCOV_SMOOTH
+**Used by:** MCOV_SMOOTH, MCOV_MODE, MCOV_MODE_VEC
 
 Controls how quickly the covariance scaling `g` decays with distance:
 
@@ -174,7 +174,7 @@ settings={'k_g': 5.0, 'k_alpha': 3.0}
 
 **Type:** float
 **Default:** 3.0
-**Used by:** MCOV_SMOOTH
+**Used by:** MCOV_SMOOTH, MCOV_MODE, MCOV_MODE_VEC
 
 Controls how quickly the interpolation weight `α` rises with distance:
 
@@ -254,7 +254,8 @@ settings={
 ```python
 settings={
     'cov_mult': 1.0,
-    'cov_beta': 1.0
+    'k_g': 10.0,
+    'k_alpha': 3.0
 }
 ```
 
