@@ -117,15 +117,15 @@ def _build_user_config(mcmc_config: Dict[str, Any]) -> Dict[str, Any]:
     """Extract and validate user configuration from raw mcmc_config."""
     mcmc_config = clean_config(mcmc_config)
 
-    use_double = mcmc_config.get('use_double')
-    posterior_id = mcmc_config.get('posterior_id')
-    rng_seed = mcmc_config.get('rng_seed', 42)
+    use_double = mcmc_config['use_double']
+    posterior_id = mcmc_config['posterior_id']
+    rng_seed = mcmc_config['rng_seed']
 
-    num_chains_a = mcmc_config.get('num_chains_a')
-    num_chains_b = mcmc_config.get('num_chains_b')
-    thin_iteration = mcmc_config.get('thin_iteration', 1)
-    num_collect = mcmc_config.get('num_collect', 0)
-    burn_iter = mcmc_config.get('burn_iter', 0)
+    num_chains_a = mcmc_config['num_chains_a']
+    num_chains_b = mcmc_config['num_chains_b']
+    thin_iteration = mcmc_config['thin_iteration']
+    num_collect = mcmc_config['num_collect']
+    burn_iter = mcmc_config['burn_iter']
     save_likelihoods = mcmc_config.get('save_likelihoods', False)
 
     num_chains = num_chains_a + num_chains_b

@@ -23,7 +23,7 @@ def clean_config(mcmc_config):
     mcmc_config.setdefault('num_chains_a', 500)
     mcmc_config.setdefault('num_chains_b', 500)
     mcmc_config.setdefault('benchmark', 10)
-    mcmc_config.setdefault('proposal', 'chain_mean')
+    mcmc_config.setdefault('rng_seed', 42)
 
     if type(mcmc_config["gpu_preallocation"]) != bool:
         logger.warning("'gpu_preallocation' must be 'True' or 'False'")

@@ -55,13 +55,13 @@ mcmc_config = {
     'num_chains_b': 500,             # Chains in group B
 
     # === OPTIONAL (with defaults) ===
-    'use_double': True,              # float64 precision (default: False)
-    'rng_seed': 1977,                # Random seed (default: system time)
-    'num_superchains': 100,          # K superchains for R-hat (default: num_chains_a // 5)
-    'burn_iter': 5000,               # Burn-in iterations (default: 1000)
-    'num_collect': 10000,            # Collection iterations (default: 1000)
-    'thin_iteration': 10,            # Thinning interval (default: 1)
-    'benchmark': 100,                # Benchmark iterations (default: 0)
+    'use_double': True,              # float64 precision (default: True)
+    'rng_seed': 1977,                # Random seed (default: 42)
+    'num_superchains': 100,          # K superchains for R-hat (default: num_chains)
+    'burn_iter': 5000,               # Burn-in iterations (default: 0)
+    'num_collect': 10000,            # Collection iterations (default: 10)
+    'thin_iteration': 10,            # Thinning interval (default: 100)
+    'benchmark': 100,                # Benchmark iterations (default: 10)
     'save_likelihoods': False,       # Save log-likelihood history (default: False)
     'chunk_size': 100,               # Iterations per compiled chunk (default: 100)
 
@@ -80,13 +80,13 @@ mcmc_config = {
 | `posterior_id` | str | *required* | Registered posterior name |
 | `num_chains_a` | int | *required* | Chains in group A |
 | `num_chains_b` | int | *required* | Chains in group B |
-| `use_double` | bool | `False` | Use float64 precision |
-| `rng_seed` | int | system time | Random seed |
-| `num_superchains` | int | `num_chains_a // 5` | K superchains for nested R-hat |
-| `burn_iter` | int | `1000` | Burn-in iterations |
-| `num_collect` | int | `1000` | Collection iterations |
-| `thin_iteration` | int | `1` | Thinning interval |
-| `benchmark` | int | `0` | Benchmark iterations |
+| `use_double` | bool | `True` | Use float64 precision |
+| `rng_seed` | int | `42` | Random seed |
+| `num_superchains` | int | `num_chains` | K superchains for nested R-hat |
+| `burn_iter` | int | `0` | Burn-in iterations |
+| `num_collect` | int | `10` | Collection iterations |
+| `thin_iteration` | int | `100` | Thinning interval |
+| `benchmark` | int | `10` | Benchmark iterations |
 | `save_likelihoods` | bool | `False` | Save log-likelihood history |
 | `chunk_size` | int | `100` | Iterations per compiled chunk |
 | `resume_runs` | int | `1` | Number of resume runs for `rmcmc()` |
