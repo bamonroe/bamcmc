@@ -298,12 +298,12 @@ def beta_bernoulli_hierarchical_batch_specs(mcmc_config, data):
 def beta_bernoulli_hierarchical_log_posterior(chain_state, param_indices, data, beta=1.0):
     """
     Hierarchical Beta-Bernoulli Model.
-    
+
     Model:
-        alpha, beta ~ Gamma(a0, b0)                    [Hyperpriors]
-        theta_i ~ Beta(alpha, beta) for i=1..n_subj    [Subject priors]
-        y_ij ~ Bernoulli(theta_i) for trials j         [Likelihood]
-    
+        alpha_hyper, beta_hyper ~ Gamma(a0, b0)                    [Hyperpriors]
+        theta_i ~ Beta(alpha_hyper, beta_hyper) for i=1..n_subj    [Subject priors]
+        y_ij ~ Bernoulli(theta_i) for trials j                     [Likelihood]
+
     Data format:
         data["int"][0]: 2D array (n_subjects, max_trials) of binary outcomes
         data["int"][1]: Array of trial counts per subject
@@ -313,36 +313,36 @@ def beta_bernoulli_hierarchical_log_posterior(chain_state, param_indices, data, 
     """
     n_subjects = data["static"][2]
     first_hyper = n_subjects  # Index where hyperparameters start
-    
+
     param_idx = param_indices[0]
-    
+
     # Check if this is a subject parameter or hyperparameter
     if param_idx < first_hyper:
         # Subject parameter update
         subject_id = param_idx
-        
+
         # Extract hyperparameters (on log scale for unconstrained sampling)
         alpha_raw = chain_state[first_hyper]
         beta_raw = chain_state[first_hyper + 1]
-        alpha = jnp.exp(alpha_raw)
-        beta = jnp.exp(beta_raw)
-        
+        alpha_hyper = jnp.exp(alpha_raw)
+        beta_hyper = jnp.exp(beta_raw)
+
         # Extract subject parameter (logit scale)
         theta_raw = chain_state[param_idx]
         theta = jax.nn.sigmoid(theta_raw)
-        
+
         # Prior from hyperparameters
-        log_prior = stats.beta.logpdf(theta, alpha, beta)
+        log_prior = stats.beta.logpdf(theta, alpha_hyper, beta_hyper)
         log_jacobian = jnp.log(theta) + jnp.log(1.0 - theta)
-        
+
         # Likelihood for this subject
         y_subject = data["int"][0][subject_id]  # All trials for this subject
         n_trials = data["int"][1][subject_id]   # Number of valid trials
-        
+
         # Mask out padded trials
         mask = jnp.arange(y_subject.shape[0]) < n_trials
         y_valid = jnp.where(mask, y_subject, 0)
-        
+
         log_lik = jnp.sum(
             jnp.where(
                 mask,

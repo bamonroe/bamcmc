@@ -25,7 +25,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-from .common import unpack_operand, sample_diffusion
+from .common import unpack_operand, sample_diffusion, regularize_covariance
 
 
 def self_mean_proposal(operand):
@@ -58,11 +58,10 @@ def self_mean_proposal(operand):
 
     cov_mult = op.settings[SettingSlot.COV_MULT]
 
-    # Scale covariance: sqrt(cov_mult) scales the Cholesky factor
-    # so that L @ L.T = cov_mult * Σ
-    L = jnp.linalg.cholesky(op.step_cov)
-    perturbation = sample_diffusion(proposal_key, L, op.current_block.shape,
-                                    scale=jnp.sqrt(cov_mult))
+    # Scale and regularize covariance: L @ L.T = cov_mult * Σ + nugget * I
+    cov_reg = regularize_covariance(op.step_cov, cov_mult)
+    L = jnp.linalg.cholesky(cov_reg)
+    perturbation = sample_diffusion(proposal_key, L, op.current_block.shape)
 
     proposal = op.current_block + (perturbation * op.block_mask)
     log_hastings_ratio = 0.0

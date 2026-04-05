@@ -124,6 +124,8 @@ def load_checkpoint(filepath: str) -> Dict[str, Any]:
             checkpoint['temp_assignments_B'] = data['temp_assignments_B'].copy()
             checkpoint['swap_accepts'] = data['swap_accepts'].copy()
             checkpoint['swap_attempts'] = data['swap_attempts'].copy()
+            if 'swap_parity' in data:
+                checkpoint['swap_parity'] = int(data['swap_parity'])
 
     return checkpoint
 

@@ -25,7 +25,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as random
 
-from .common import unpack_operand, sample_diffusion
+from .common import unpack_operand, sample_diffusion, regularize_covariance
 
 
 def chain_mean_proposal(operand):
@@ -55,7 +55,8 @@ def chain_mean_proposal(operand):
     op = unpack_operand(operand)
     new_key, proposal_key = random.split(op.key)
 
-    L = jnp.linalg.cholesky(op.step_cov)
+    cov_reg = regularize_covariance(op.step_cov)
+    L = jnp.linalg.cholesky(cov_reg)
     perturbation = sample_diffusion(proposal_key, L, op.current_block.shape)
 
     proposal = op.step_mean + (perturbation * op.block_mask)

@@ -29,7 +29,7 @@ import jax.numpy as jnp
 import jax.random as random
 
 from ..settings import SettingSlot
-from .common import unpack_operand
+from .common import unpack_operand, regularize_covariance
 
 
 def mixture_proposal(operand):
@@ -69,8 +69,9 @@ def mixture_proposal(operand):
 
     use_chain_mean = random.uniform(choice_key) < chain_prob
 
-    # Cholesky for chain_mean (unscaled)
-    L = jnp.linalg.cholesky(op.step_cov)
+    # Cholesky for chain_mean (unscaled, regularized)
+    cov_reg = regularize_covariance(op.step_cov)
+    L = jnp.linalg.cholesky(cov_reg)
 
     # Scaled Cholesky for self_mean
     scaled_L = L * jnp.sqrt(cov_mult)
