@@ -194,7 +194,7 @@ def _initialize_chains(
             K=K,
             M=M,
             noise_scale=reset_noise_scale,
-            rng_seed=user_config.get('rng_seed')
+            rng_seed=user_config['rng_seed']
         )
 
         initial_carry, user_config = initialize_mcmc_system(
