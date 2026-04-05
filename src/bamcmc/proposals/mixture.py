@@ -97,11 +97,18 @@ def mixture_proposal(operand):
         solved = jax.scipy.linalg.solve_triangular(L, diff, lower=True)
         return -0.5 * jnp.sum(solved**2)
 
+    # Log-det correction for the self_mean component relative to chain_mean.
+    # det(cov_mult * Σ) = cov_mult^d * det(Σ), so the Gaussian normalization
+    # differs by -d/2 * log(cov_mult). Without this, the mixture weights are
+    # wrong when cov_mult != 1, breaking detailed balance.
+    ndim = jnp.sum(op.block_mask)
+    log_det_correction = -0.5 * ndim * jnp.log(cov_mult)
+
     def log_density_self(y, center):
-        """Log density for self_mean (scaled covariance)."""
+        """Log density for self_mean (scaled covariance), with det correction."""
         diff = (y - center) * op.block_mask
         solved = jax.scipy.linalg.solve_triangular(scaled_L, diff, lower=True)
-        return -0.5 * jnp.sum(solved**2)
+        return -0.5 * jnp.sum(solved**2) + log_det_correction
 
     log_q_ind_forward = log_density_chain(proposal, op.step_mean)
     log_q_rw_forward = log_density_self(proposal, op.current_block)
