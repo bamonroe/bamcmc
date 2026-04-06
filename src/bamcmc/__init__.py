@@ -48,6 +48,14 @@ Example:
     from bamcmc import reset_from_checkpoint
     init_vector, info = reset_from_checkpoint('checkpoint.npz', 'my_model', n_subjects=100, K=50, M=20)
 """
+# Package version — single source of truth is pyproject.toml, read via importlib.metadata.
+from importlib.metadata import version as _pkg_version, PackageNotFoundError as _PackageNotFoundError
+
+try:
+    __version__ = _pkg_version("bamcmc")
+except _PackageNotFoundError:  # package not installed (e.g. running from source without install)
+    __version__ = "0.0.0+unknown"
+
 # Logging setup — default to INFO level with plain message format.
 # Users can control verbosity: logging.getLogger('bamcmc').setLevel(logging.WARNING)
 import logging as _logging

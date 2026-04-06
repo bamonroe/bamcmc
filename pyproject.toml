@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bamcmc"
-version = "0.1.0"
+version = "1.0.0"
 description = "Bayesian MCMC sampling with coupled A/B chains and nested R-hat diagnostics"
 readme = "README.md"
 license = {text = "MIT"}
