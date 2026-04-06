@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Corrected `authors` field in `pyproject.toml` from "Benjamin Monroe" to "Brian Albert Monroe".
+
 ## [1.0.0] - 2026-04-06
 
 First stable release.
