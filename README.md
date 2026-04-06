@@ -1,5 +1,8 @@
 # bamcmc
 
+[![CI](https://github.com/bamonroe/bamcmc/actions/workflows/ci.yml/badge.svg)](https://github.com/bamonroe/bamcmc/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Bayesian MCMC sampling package with coupled A/B chains and nested R-hat diagnostics.
 
 ## Features
@@ -100,4 +103,4 @@ pytest tests/ -v
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
